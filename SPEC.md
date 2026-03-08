@@ -150,7 +150,7 @@ def dispatch_agent(agent_id: str, zouzhe_id: str, timeout_sec: int):
     def _run():
         try:
             subprocess.run(
-                ["themachine", "agent", "--agent", agent_id,
+                ["openclaw", "agent", "--agent", agent_id,
                  "-m", msg, "--deliver", "--timeout", str(timeout_sec)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
