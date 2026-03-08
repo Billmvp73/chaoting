@@ -44,6 +44,23 @@ ROLE_DESCRIPTIONS = {
 
 DEFAULT_REVIEW_AGENTS = ["jishi_tech", "jishi_risk"]
 
+# review_required levels → default 给事中 mapping
+REVIEW_LEVEL_MAP = {
+    0: [],                                                          # 免审
+    1: ["jishi_tech"],                                              # 普通
+    2: ["jishi_tech", "jishi_risk"],                                # 重要
+    3: ["jishi_tech", "jishi_risk", "jishi_resource", "jishi_compliance"],  # 军国大事
+}
+
+
+def get_review_agents(zouzhe):
+    """Resolve review agents: review_agents JSON override > review_required level."""
+    agents_json = zouzhe["review_agents"]
+    if agents_json:
+        return json.loads(agents_json)
+    level = zouzhe.get("review_required", 0) or 0
+    return REVIEW_LEVEL_MAP.get(level, DEFAULT_REVIEW_AGENTS)
+
 OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "openclaw")
 
 
@@ -195,7 +212,7 @@ def dispatch_reviewers(db, zouzhe):
     db.commit()
 
     agents_json = zouzhe["review_agents"]
-    jishi_list = json.loads(agents_json) if agents_json else DEFAULT_REVIEW_AGENTS
+    jishi_list = get_review_agents(zouzhe)
 
     for jishi_id in jishi_list:
         actual_agent = REVIEW_AGENT_MAP.get(jishi_id, jishi_id)
@@ -215,7 +232,7 @@ def dispatch_reviewers(db, zouzhe):
 
 def check_votes(db, zouzhe):
     """Poll reviewing state, count votes, handle go/nogo/three-strikes."""
-    jishi_list = json.loads(zouzhe["review_agents"]) if zouzhe["review_agents"] else DEFAULT_REVIEW_AGENTS
+    jishi_list = get_review_agents(zouzhe)
     current_round = zouzhe["revise_count"] + 1
 
     votes = db.execute(
@@ -305,7 +322,7 @@ def check_votes(db, zouzhe):
 
 def handle_review_timeout(db, zouzhe):
     """Handle reviewing state timeout: critical→failed, normal→auto-go."""
-    jishi_list = json.loads(zouzhe["review_agents"]) if zouzhe["review_agents"] else DEFAULT_REVIEW_AGENTS
+    jishi_list = get_review_agents(zouzhe)
     current_round = zouzhe["revise_count"] + 1
 
     voted = db.execute(

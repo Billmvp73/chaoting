@@ -92,16 +92,18 @@ created → planning → reviewing → executing → done │
 | `jishi_resource` | 资源给事中 | 📦 | 工时合理性、token 预算 |
 | `jishi_compliance` | 合规给事中 | 🛡️ | 安全合规、权限边界 |
 
-### 审核规格
+### 审核级别
 
-司礼监创建奏折时决定审核级别：
+创建奏折时通过 `review_required` 设定审核级别：
 
-| 级别 | review_required | 给事中 |
-|------|----------------|--------|
-| 小事 | 0 | 跳过门下省 |
-| 普通 | 1 | jishi_tech |
-| 重要 | 1 | jishi_tech + jishi_risk |
-| 军国大事 | 1 | 全部四位给事中 |
+| review_required | 级别 | 给事中 |
+|----------------|------|--------|
+| 0 | 免审（小事） | 跳过门下省，直接执行 |
+| 1 | 普通 | jishi_tech |
+| 2 | 重要 | jishi_tech + jishi_risk |
+| 3 | 军国大事 | 全部四位给事中 |
+
+> 也可通过 `review_agents` JSON 数组自定义审核人，覆盖默认映射。
 
 ### 投票流程
 
