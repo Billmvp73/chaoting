@@ -150,7 +150,7 @@
 **为什么需要：** 当前每次创建任务都从头描述，重复劳动多且质量不稳定。模板降低任务创建门槛，同时为中书省规划提供更清晰的上下文。
 
 **实现要点：**
-- YAML/JSON 模板文件存于 `~/.themachine/chaoting/templates/`
+- YAML/JSON 模板文件存于 `<CHAOTING_DIR>/templates/`
 - `chaoting new --template bug-fix "标题" "描述"` 快速创建
 - 模板包含：描述框架、默认 `review_required` 级别、推荐执行部门
 

@@ -4,7 +4,7 @@
 
 A task orchestration system for OpenClaw multi-agent workflows. Agents coordinate through a shared SQLite database (stigmergy pattern) — no direct agent-to-agent communication.
 
-**Directory:** `~/.themachine/chaoting/`
+**Directory:** `<CHAOTING_DIR>/`
 
 ## Components
 
@@ -262,7 +262,7 @@ Returns:
 
 **plan** — Zhongshu submits planning result, advances state to executing
 ```bash
-chaoting plan ZZ-20260308-001 '{"steps":[...],"target_agent":"bingbu","repo_path":"/home/tetter/CSW/tetration","target_files":["src/enforce.c"],"acceptance_criteria":"单测通过"}'
+chaoting plan ZZ-20260308-001 '{"steps":[...],"target_agent":"bingbu","repo_path":"/path/to/your/repo","target_files":["src/enforce.c"],"acceptance_criteria":"单测通过"}'
 ```
 - Updates plan field, sets state=executing, sets assigned_agent from plan.target_agent
 - Sets dispatched_at=NULL so dispatcher picks it up
@@ -306,7 +306,7 @@ Description=Chaoting Dispatcher
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 %h/.themachine/chaoting/dispatcher.py
+ExecStart=/usr/bin/python3 ${CHAOTING_DIR}/src/dispatcher.py
 Restart=always
 RestartSec=5
 Environment=PATH=%h/.nvm/versions/node/v22.22.0/bin:/usr/local/bin:/usr/bin:/bin
@@ -317,11 +317,11 @@ WantedBy=default.target
 
 ### Installation
 ```bash
-mkdir -p ~/.themachine/chaoting
+mkdir -p <CHAOTING_DIR>
 # Copy files
-python3 ~/.themachine/chaoting/init_db.py
+python3 <CHAOTING_DIR>/init_db.py
 # Make chaoting CLI available
-ln -s ~/.themachine/chaoting/chaoting /usr/local/bin/chaoting
+ln -s <CHAOTING_DIR>/chaoting /usr/local/bin/chaoting
 # or add to PATH
 # Start dispatcher
 systemctl --user enable --now chaoting-dispatcher
@@ -329,7 +329,7 @@ systemctl --user enable --now chaoting-dispatcher
 
 ## File Structure
 ```
-~/.themachine/chaoting/
+<CHAOTING_DIR>/
 ├── chaoting.db        # SQLite database (auto-created)
 ├── dispatcher.py      # Dispatcher daemon
 ├── chaoting           # CLI tool (executable, #!/usr/bin/env python3)

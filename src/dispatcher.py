@@ -9,7 +9,9 @@ import subprocess
 import threading
 import time
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chaoting.db")
+CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
+CHAOTING_CLI = os.path.join(CHAOTING_DIR, "src", "chaoting") if os.path.isfile(os.path.join(CHAOTING_DIR, "src", "chaoting")) else os.path.join(CHAOTING_DIR, "chaoting")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,7 +44,7 @@ ROLE_DESCRIPTIONS = {
 
 DEFAULT_REVIEW_AGENTS = ["jishi_tech", "jishi_risk"]
 
-THEMACHINE_CLI = "/home/tetter/.nvm/versions/node/v24.13.1/bin/themachine"
+OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "openclaw")
 
 
 def get_db():
@@ -58,13 +60,13 @@ def dispatch_agent(agent_id: str, zouzhe_id: str, timeout_sec: int, msg: str = N
         msg = (
             f"\U0001f4dc 奏折 {zouzhe_id} 已派发给你。请立即执行以下步骤：\n\n"
             f"步骤一：接旨，运行这个命令查看任务详情：\n"
-            f"/home/tetter/.themachine/chaoting/chaoting pull {zouzhe_id}\n\n"
+            f"{CHAOTING_CLI} pull {zouzhe_id}\n\n"
             f"步骤二：根据任务内容，制定执行方案并提交（这是必须完成的操作）：\n"
-            f"/home/tetter/.themachine/chaoting/chaoting plan {zouzhe_id} '<plan_json>'\n\n"
+            f"{CHAOTING_CLI} plan {zouzhe_id} '<plan_json>'\n\n"
             f"其他可用命令：\n"
-            f"奏报: /home/tetter/.themachine/chaoting/chaoting progress {zouzhe_id} '进展'\n"
-            f"完成: /home/tetter/.themachine/chaoting/chaoting done {zouzhe_id} '产出' '摘要'\n"
-            f"失败: /home/tetter/.themachine/chaoting/chaoting fail {zouzhe_id} '原因'\n\n"
+            f"奏报: {CHAOTING_CLI} progress {zouzhe_id} '进展'\n"
+            f"完成: {CHAOTING_CLI} done {zouzhe_id} '产出' '摘要'\n"
+            f"失败: {CHAOTING_CLI} fail {zouzhe_id} '原因'\n\n"
             f"⚠️ 你必须用 exec 工具运行上述命令。先 pull 查看任务，完成后用 done 或 fail 汇报。"
         )
 
@@ -73,7 +75,7 @@ def dispatch_agent(agent_id: str, zouzhe_id: str, timeout_sec: int, msg: str = N
             logfile = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"dispatch-{agent_id}-{zouzhe_id}.log")
             with open(logfile, 'w') as f:
                 result = subprocess.run(
-                    [THEMACHINE_CLI, "agent", "--agent", agent_id,
+                    [OPENCLAW_CLI, "agent", "--agent", agent_id,
                      "-m", msg, "--timeout", str(timeout_sec)],
                     stdout=f,
                     stderr=subprocess.STDOUT,
@@ -104,7 +106,7 @@ def notify_capcom(zouzhe, message: str):
     msg = f"⚠️ 司礼监通知\n\n奏折: {zouzhe['id']}\n{message}"
     try:
         subprocess.run(
-            [THEMACHINE_CLI, "agent", "--agent", "capcom",
+            [OPENCLAW_CLI, "agent", "--agent", "capcom",
              "-m", msg, "--timeout", "120"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -133,8 +135,8 @@ def format_review_message(zouzhe, jishi_id: str, role_desc: str) -> str:
         f"📋 中书省方案:\n{plan_text}\n\n"
         f"🔍 你的角色: {role_desc}\n\n"
         f"投票（必须指定 --as 参数）:\n"
-        f"  /home/tetter/.themachine/chaoting/chaoting vote {zouzhe['id']} go \"准奏理由\" --as {jishi_id}\n"
-        f"  /home/tetter/.themachine/chaoting/chaoting vote {zouzhe['id']} nogo \"封驳理由（请明确指出需要修改什么）\" --as {jishi_id}\n\n"
+        f"  {CHAOTING_CLI} vote {zouzhe['id']} go \"准奏理由\" --as {jishi_id}\n"
+        f"  {CHAOTING_CLI} vote {zouzhe['id']} nogo \"封驳理由（请明确指出需要修改什么）\" --as {jishi_id}\n\n"
         f"⚠️ 你必须用 exec 工具运行上面的 vote 命令来投票。审核后选择 go 或 nogo，然后执行对应的命令。"
     )
 
@@ -146,8 +148,8 @@ def format_revising_message(zouzhe) -> str:
         return (
             f"📜 奏折 {zouzhe['id']} 被门下省封驳\n\n"
             f"请修改方案后重新提交:\n"
-            f"  /home/tetter/.themachine/chaoting/chaoting pull {zouzhe['id']}\n"
-            f"  /home/tetter/.themachine/chaoting/chaoting plan {zouzhe['id']} '{{new_plan_json}}'"
+            f"  {CHAOTING_CLI} pull {zouzhe['id']}\n"
+            f"  {CHAOTING_CLI} plan {zouzhe['id']} '{{new_plan_json}}'"
         )
 
     last_round = history[-1]
@@ -175,8 +177,8 @@ def format_revising_message(zouzhe) -> str:
         parts.extend(go_lines)
     parts.append(
         f"\n请修改方案后重新提交:\n"
-        f"  /home/tetter/.themachine/chaoting/chaoting pull {zouzhe['id']}\n"
-        f"  /home/tetter/.themachine/chaoting/chaoting plan {zouzhe['id']} '{{new_plan_json}}'"
+        f"  {CHAOTING_CLI} pull {zouzhe['id']}\n"
+        f"  {CHAOTING_CLI} plan {zouzhe['id']} '{{new_plan_json}}'"
     )
     return "\n".join(parts)
 

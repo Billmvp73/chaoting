@@ -184,13 +184,17 @@ chaoting vote ZZ-20260308-001 nogo "缺少回滚方案" --as jishi_risk
 ### 安装
 
 ```bash
-# 初始化数据库
-python3 src/init_db.py
+# Clone
+git clone https://github.com/Billmvp73/chaoting.git
+cd chaoting
 
-# 启动调度器
-systemctl --user enable --now chaoting-dispatcher
+# Install (initializes DB + installs systemd service)
+./install.sh
 
-# 验证
+# Or specify OpenClaw CLI path explicitly
+OPENCLAW_CLI=/path/to/openclaw ./install.sh
+
+# Verify
 systemctl --user status chaoting-dispatcher
 ```
 
@@ -263,7 +267,7 @@ chaoting/
 ├── examples/
 │   ├── agent-souls.md     # Agent SOUL.md 模板
 │   └── openclaw-agents.yaml  # OpenClaw agent 配置示例
-├── chaoting-dispatcher.service  # systemd 服务文件
+├── install.sh             # 一键安装脚本
 ├── ACKNOWLEDGEMENTS.md    # 致谢与灵感来源
 ├── LICENSE                # MIT License
 └── README.md

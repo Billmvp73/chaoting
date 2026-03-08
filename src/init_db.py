@@ -4,7 +4,8 @@
 import os
 import sqlite3
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chaoting.db")
+CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
