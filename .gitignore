@@ -1,9 +1,16 @@
+# Database
 chaoting.db
 chaoting.db-wal
 chaoting.db-shm
+chaoting.db.bak-*
+
+# Dispatch logs
 dispatch-*.log
+
+# Python
 __pycache__/
 *.pyc
-chaoting.db.bak-*
+
+# Test artifacts
 TEST-*.txt
 CHANGELOG-0*.md

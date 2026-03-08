@@ -159,10 +159,10 @@ chaoting vote ZZ-20260308-001 nogo "缺少回滚方案" --as jishi_risk
 
 | 组件 | 文件 | 说明 |
 |------|------|------|
-| 调度器 | `dispatcher.py` | systemd 常驻守护进程，5s 轮询 |
-| CLI | `chaoting` | 智能体命令行工具 |
-| 数据库 | `chaoting.db` | SQLite WAL 模式 |
-| Schema | `init_db.py` | 数据库初始化/迁移 |
+| 调度器 | `src/dispatcher.py` | systemd 常驻守护进程，5s 轮询 |
+| CLI | `src/chaoting` | 智能体命令行工具 |
+| 数据库 | `chaoting.db` | SQLite WAL 模式（运行时生成） |
+| Schema | `src/init_db.py` | 数据库初始化/迁移 |
 
 ---
 
@@ -185,7 +185,7 @@ chaoting vote ZZ-20260308-001 nogo "缺少回滚方案" --as jishi_risk
 
 ```bash
 # 初始化数据库
-python3 ~/.themachine/chaoting/init_db.py
+python3 src/init_db.py
 
 # 启动调度器
 systemctl --user enable --now chaoting-dispatcher
@@ -242,5 +242,40 @@ chaoting context bingbu "key" "value" --source ZZ-20260308-001
 
 ## 详细规范
 
-- MVP 规范：[`SPEC.md`](./SPEC.md)
-- 门下省规范：[`SPEC-menxia.md`](./SPEC-menxia.md)
+- MVP 规范：[`docs/SPEC.md`](./docs/SPEC.md)
+- 门下省规范：[`docs/SPEC-menxia.md`](./docs/SPEC-menxia.md)
+- Roadmap：[`docs/ROADMAP.md`](./docs/ROADMAP.md)
+
+## 项目结构
+
+```
+chaoting/
+├── src/
+│   ├── dispatcher.py      # 调度守护进程
+│   ├── chaoting           # 智能体 CLI 工具
+│   └── init_db.py         # 数据库初始化
+├── docs/
+│   ├── SPEC.md            # MVP 技术规范
+│   ├── SPEC-menxia.md     # 门下省审核机制规范
+│   ├── ROADMAP.md         # 版本规划
+│   ├── CHANGELOG.md       # 变更日志
+│   └── CONTRIBUTORS.md    # 参与者名单
+├── examples/
+│   ├── agent-souls.md     # Agent SOUL.md 模板
+│   └── openclaw-agents.yaml  # OpenClaw agent 配置示例
+├── chaoting-dispatcher.service  # systemd 服务文件
+├── ACKNOWLEDGEMENTS.md    # 致谢与灵感来源
+├── LICENSE                # MIT License
+└── README.md
+```
+
+## 致谢
+
+本项目的设计灵感来自以下开源项目，详见 [ACKNOWLEDGEMENTS.md](./ACKNOWLEDGEMENTS.md)：
+
+- [菠萝王朝 (boluobobo-ai-court-tutorial)](https://github.com/wanikua/boluobobo-ai-court-tutorial) — 率先将三省六部制引入 OpenClaw
+- [三省六部 (edict)](https://github.com/cft0808/edict) — 完整的三省六部 pipeline 实现，门下省封驳机制的核心参考
+
+## License
+
+[MIT](./LICENSE) © 2026 Bill Huang

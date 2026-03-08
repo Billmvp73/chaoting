@@ -1,0 +1,72 @@
+# Example: OpenClaw Agent Configuration
+#
+# Add these to your openclaw.json under agents.list[]
+# Adjust model and workspace paths for your environment.
+
+agents:
+  list:
+    # 中书省 — Planning
+    - id: zhongshu
+      workspace: ~/.openclaw/workspace-zhongshu
+      model: anthropic/claude-sonnet-4-6
+      identity:
+        name: 中书省
+        emoji: "📜"
+
+    # 门下省 — Review (给事中)
+    - id: jishi_tech
+      workspace: ~/.openclaw/workspace-jishi_tech
+      model: anthropic/claude-sonnet-4-6
+      identity:
+        name: 技术给事中
+        emoji: "🔬"
+
+    - id: jishi_risk
+      workspace: ~/.openclaw/workspace-jishi_risk
+      model: anthropic/claude-sonnet-4-6
+      identity:
+        name: 风险给事中
+        emoji: "⚠️"
+
+    # 六部 — Execution
+    - id: bingbu
+      workspace: ~/.openclaw/workspace-bingbu
+      model: anthropic/claude-sonnet-4-6
+      identity:
+        name: 兵部
+        emoji: "⚔️"
+
+    - id: gongbu
+      workspace: ~/.openclaw/workspace-gongbu
+      model: anthropic/claude-sonnet-4-6
+      identity:
+        name: 工部
+        emoji: "🔨"
+
+    - id: hubu
+      workspace: ~/.openclaw/workspace-hubu
+      model: anthropic/claude-sonnet-4-6
+      identity:
+        name: 户部
+        emoji: "📊"
+
+    - id: libu
+      workspace: ~/.openclaw/workspace-libu
+      model: anthropic/claude-sonnet-4-6
+      identity:
+        name: 礼部
+        emoji: "📚"
+
+    - id: xingbu
+      workspace: ~/.openclaw/workspace-xingbu
+      model: anthropic/claude-sonnet-4-6
+      identity:
+        name: 刑部
+        emoji: "⚖️"
+
+    - id: libu_hr
+      workspace: ~/.openclaw/workspace-libu_hr
+      model: anthropic/claude-sonnet-4-6
+      identity:
+        name: 吏部
+        emoji: "👔"
