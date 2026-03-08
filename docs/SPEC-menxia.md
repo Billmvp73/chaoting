@@ -234,7 +234,7 @@ def check_votes(zouzhe):
             ).rowcount
             if affected == 0:
                 return
-            notify_capcom(zouzhe, "奏折已被封驳3次，请人工决断")
+            notify_silijian(zouzhe, "奏折已被封驳3次，请人工决断")
         else:
             # 存档旧 plan + 封驳意见（fix #7 + #11）
             archive_entry = {
@@ -292,7 +292,7 @@ def handle_review_timeout(zouzhe):
             "WHERE id = ? AND state = 'reviewing'",
             (zouzhe["id"],)
         )
-        notify_capcom(zouzhe, f"军国大事审核超时，{len(missing)} 名给事中未投票")
+        notify_silijian(zouzhe, f"军国大事审核超时，{len(missing)} 名给事中未投票")
     else:
         # 普通任务：超时视为准奏，但通知司礼监
         for jishi_id in missing:
@@ -301,7 +301,7 @@ def handle_review_timeout(zouzhe):
                 "VALUES (?, ?, ?, 'system', 'go', '超时未投，默认准奏')",
                 (zouzhe["id"], current_round, jishi_id)
             )
-        notify_capcom(zouzhe, f"审核超时，{len(missing)} 名给事中默认准奏")
+        notify_silijian(zouzhe, f"审核超时，{len(missing)} 名给事中默认准奏")
         # 下次 poll 时 check_votes 会检测到全部投完
 ```
 
@@ -403,7 +403,7 @@ def cmd_vote(zouzhe_id, vote, reason, jishi_id):
 | 6 | set_state 缺 CAS | 所有 UPDATE 加 WHERE state='reviewing'，检查 rowcount | ✅ |
 | 7 | 旧 plan 幽灵执行 | 进入 revising 时 SET plan=NULL | ✅ |
 | 8 | 军国大事超时 | priority=critical 时超时→failed+通知，普通→默认准奏 | ✅ |
-| 9 | 超时无通知 | 所有超时准奏都 notify_capcom | ✅ |
+| 9 | 超时无通知 | 所有超时准奏都 notify_silijian | ✅ |
 | 10 | ALTER TABLE DEFAULT | DEFAULT 0，代码层面新建时设 1 | ✅ |
 | 11 | 封驳消息缺原始 plan | plan_history 存档，封驳消息包含旧 plan + 意见 | ✅ |
 

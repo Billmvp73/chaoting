@@ -22,7 +22,7 @@
 
 | # | Agent ID | 中文名 | 类型 | Emoji |
 |---|----------|--------|------|-------|
-| 1 | `capcom` | 司礼监 | 监察总管 | 🎭 |
+| 1 | `silijian` | 司礼监 | 监察总管 | 🎭 |
 | 2 | `zhongshu` | 中书省 | 规划部门 | 📜 |
 | 3 | `jishi_tech` | 技术给事中 | 审核部门 | 🔬 |
 | 4 | `jishi_risk` | 风险给事中 | 审核部门 | ⚠️ |
@@ -107,7 +107,7 @@ $OPENCLAW_STATE_DIR/                       # 默认 ~/.openclaw/
 ├── openclaw.json                          # OpenClaw 主配置（用户已有）
 ├── openclaw.json.bak.20260308-163000      # --auto-config 时自动备份
 │
-├── workspace-capcom/
+├── workspace-silijian/
 │   ├── SOUL.md                            # 司礼监角色定义
 │   ├── AGENTS.md                          # （通用模板）
 │   └── memory/                            # （运行时生成）
@@ -141,7 +141,7 @@ $CHAOTING_DIR/                             # 安装目录
 
 按角色类型分为四类模板，共用占位符：`{AGENT_NAME_ZH}`、`{AGENT_ID}`、`{CHAOTING_CLI}`。
 
-### 模板 A：司礼监（capcom）
+### 模板 A：司礼监（silijian）
 
 ```markdown
 # SOUL.md — 司礼监 (Capcom)
@@ -273,8 +273,8 @@ bingbu(编码) / gongbu(运维) / hubu(数据) / libu(文档) / xingbu(安全) /
   "_chaoting_dir": "/home/user/.themachine/chaoting",
   "agents": [
     {
-      "id": "capcom",
-      "workspace": "/home/user/.openclaw/workspace-capcom",
+      "id": "silijian",
+      "workspace": "/home/user/.openclaw/workspace-silijian",
       "model": "anthropic/claude-sonnet-4-6",
       "identity": {
         "name": "司礼监",
@@ -401,7 +401,7 @@ done
 === [4/4] Agent 配置 ===
 
 创建 workspace 目录和 SOUL.md：
-  [create] capcom        → ~/.openclaw/workspace-capcom/SOUL.md
+  [create] silijian        → ~/.openclaw/workspace-silijian/SOUL.md
   [create] zhongshu      → ~/.openclaw/workspace-zhongshu/SOUL.md
   [create] jishi_tech    → ~/.openclaw/workspace-jishi_tech/SOUL.md
   [create] jishi_risk    → ~/.openclaw/workspace-jishi_risk/SOUL.md

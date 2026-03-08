@@ -118,19 +118,19 @@ def dispatch_agent(agent_id: str, zouzhe_id: str, timeout_sec: int, msg: str = N
     log.info("Dispatched %s to agent %s (timeout=%ds)", zouzhe_id, agent_id, timeout_sec)
 
 
-def notify_capcom(zouzhe, message: str):
-    """Notify capcom (司礼监) about events requiring attention."""
+def notify_silijian(zouzhe, message: str):
+    """Notify silijian (司礼监) about events requiring attention."""
     msg = f"⚠️ 司礼监通知\n\n奏折: {zouzhe['id']}\n{message}"
     try:
         subprocess.run(
-            [OPENCLAW_CLI, "agent", "--agent", "capcom",
+            [OPENCLAW_CLI, "agent", "--agent", "silijian",
              "-m", msg, "--timeout", "120"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=180,
         )
     except Exception as e:
-        log.error("Failed to notify capcom for %s: %s", zouzhe["id"], e)
+        log.error("Failed to notify silijian for %s: %s", zouzhe["id"], e)
 
 
 def format_review_message(zouzhe, jishi_id: str, role_desc: str) -> str:
@@ -284,7 +284,7 @@ def check_votes(db, zouzhe):
             )
             db.commit()
             log.warning("三驳失败 %s，呈御前裁决", zouzhe["id"])
-            notify_capcom(dict(zouzhe), "奏折已被封驳3次，请人工决断")
+            notify_silijian(dict(zouzhe), "奏折已被封驳3次，请人工决断")
         else:
             # Archive old plan + votes, enter revising
             archive_entry = {
@@ -353,9 +353,9 @@ def handle_review_timeout(db, zouzhe):
         )
         db.commit()
         log.warning("军国大事审核超时 %s，标记失败", zouzhe["id"])
-        notify_capcom(dict(zouzhe), f"军国大事审核超时，{len(missing)} 名给事中未投票")
+        notify_silijian(dict(zouzhe), f"军国大事审核超时，{len(missing)} 名给事中未投票")
     else:
-        # Normal: auto-insert go votes for missing, notify capcom
+        # Normal: auto-insert go votes for missing, notify silijian
         for jishi_id in missing:
             db.execute(
                 "INSERT OR IGNORE INTO toupiao (zouzhe_id, round, jishi_id, agent_id, vote, reason) "
@@ -369,7 +369,7 @@ def handle_review_timeout(db, zouzhe):
         )
         db.commit()
         log.info("审核超时 %s，%d 名给事中默认准奏", zouzhe["id"], len(missing))
-        notify_capcom(dict(zouzhe), f"审核超时，{len(missing)} 名给事中默认准奏")
+        notify_silijian(dict(zouzhe), f"审核超时，{len(missing)} 名给事中默认准奏")
         # Next poll cycle check_votes will see all votes complete
 
 

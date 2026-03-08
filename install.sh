@@ -174,7 +174,7 @@ echo "  Created $CREATED, skipped $SKIPPED."
 echo ""
 if [ "$AUTO_CONFIG" = "0" ]; then
     echo "司礼监 (Capcom) — task creator & alert handler:"
-    echo "  [1] Create standalone capcom agent"
+    echo "  [1] Create standalone silijian agent"
     echo "  [2] Append to main agent's SOUL.md"
     echo "  [3] Skip"
     read -rp "Choice [1/2/3]: " CAPCOM_CHOICE
@@ -185,18 +185,18 @@ fi
 
 case "$CAPCOM_CHOICE" in
     1)
-        capcom_ws="$OPENCLAW_STATE_DIR/workspace-capcom"
-        capcom_dst="$capcom_ws/SOUL.md"
-        if [ -f "$capcom_dst" ]; then
-            echo "  [skip] capcom — SOUL.md already exists"
+        silijian_ws="$OPENCLAW_STATE_DIR/workspace-silijian"
+        silijian_dst="$silijian_ws/SOUL.md"
+        if [ -f "$silijian_dst" ]; then
+            echo "  [skip] silijian — SOUL.md already exists"
         else
-            mkdir -p "$capcom_ws"
+            mkdir -p "$silijian_ws"
             CHAOTING_CLI_PATH="$CHAOTING_DIR/src/chaoting"
-            sed "s|\\\$CHAOTING_CLI|${CHAOTING_CLI_PATH}|g; s|\\\$CHAOTING_DIR|${CHAOTING_DIR}|g" "$SOULS_DIR/capcom.md" > "$capcom_dst"
-            echo "  [create] capcom → $capcom_dst"
+            sed "s|\\\$CHAOTING_CLI|${CHAOTING_CLI_PATH}|g; s|\\\$CHAOTING_DIR|${CHAOTING_DIR}|g" "$SOULS_DIR/silijian.md" > "$silijian_dst"
+            echo "  [create] silijian → $silijian_dst"
         fi
-        # Add capcom to agent list for config fragment
-        SUB_AGENTS+=(capcom)
+        # Add silijian to agent list for config fragment
+        SUB_AGENTS+=(silijian)
         AGENT_NAMES+=("司礼监")
         AGENT_EMOJIS+=("🎭")
         ;;
@@ -207,21 +207,21 @@ case "$CAPCOM_CHOICE" in
             echo "---" >> "$MAIN_SOUL"
             echo "" >> "$MAIN_SOUL"
             CHAOTING_CLI_PATH="$CHAOTING_DIR/src/chaoting"
-            sed "s|\\\$CHAOTING_CLI|${CHAOTING_CLI_PATH}|g; s|\\\$CHAOTING_DIR|${CHAOTING_DIR}|g" "$SOULS_DIR/capcom.md" >> "$MAIN_SOUL"
-            echo "  [append] capcom role appended to $MAIN_SOUL"
+            sed "s|\\\$CHAOTING_CLI|${CHAOTING_CLI_PATH}|g; s|\\\$CHAOTING_DIR|${CHAOTING_DIR}|g" "$SOULS_DIR/silijian.md" >> "$MAIN_SOUL"
+            echo "  [append] silijian role appended to $MAIN_SOUL"
         else
             echo "  [warn] Main SOUL.md not found at $MAIN_SOUL — creating standalone instead"
-            capcom_ws="$OPENCLAW_STATE_DIR/workspace-capcom"
-            mkdir -p "$capcom_ws"
+            silijian_ws="$OPENCLAW_STATE_DIR/workspace-silijian"
+            mkdir -p "$silijian_ws"
             CHAOTING_CLI_PATH="$CHAOTING_DIR/src/chaoting"
-            sed "s|\\\$CHAOTING_CLI|${CHAOTING_CLI_PATH}|g; s|\\\$CHAOTING_DIR|${CHAOTING_DIR}|g" "$SOULS_DIR/capcom.md" > "$capcom_ws/SOUL.md"
-            SUB_AGENTS+=(capcom)
+            sed "s|\\\$CHAOTING_CLI|${CHAOTING_CLI_PATH}|g; s|\\\$CHAOTING_DIR|${CHAOTING_DIR}|g" "$SOULS_DIR/silijian.md" > "$silijian_ws/SOUL.md"
+            SUB_AGENTS+=(silijian)
             AGENT_NAMES+=("司礼监")
             AGENT_EMOJIS+=("🎭")
         fi
         ;;
     *)
-        echo "  Skipped capcom setup."
+        echo "  Skipped silijian setup."
         ;;
 esac
 
