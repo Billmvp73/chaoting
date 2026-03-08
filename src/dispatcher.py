@@ -173,7 +173,7 @@ def format_revising_message(zouzhe) -> str:
     old_plan = last_round.get("plan")
     old_plan_text = json.dumps(old_plan, ensure_ascii=False, indent=2) if old_plan else "(无)"
     votes = last_round.get("votes", [])
-    revise_count = zouzhe["revise_count"]
+    revise_count = zouzhe["revise_count"] or 0
 
     nogo_lines = []
     go_lines = []
@@ -233,7 +233,7 @@ def dispatch_reviewers(db, zouzhe):
 def check_votes(db, zouzhe):
     """Poll reviewing state, count votes, handle go/nogo/three-strikes."""
     jishi_list = get_review_agents(zouzhe)
-    current_round = zouzhe["revise_count"] + 1
+    current_round = (zouzhe["revise_count"] or 0) + 1
 
     votes = db.execute(
         "SELECT jishi_id, vote, reason FROM toupiao "
@@ -266,7 +266,7 @@ def check_votes(db, zouzhe):
         log.info("门下省准奏 %s，全票通过", zouzhe["id"])
     else:
         # Has nogo votes
-        if zouzhe["revise_count"] >= 2:
+        if (zouzhe["revise_count"] or 0) >= 2:
             # Three strikes → failed (CAS)
             affected = db.execute(
                 "UPDATE zouzhe SET state = 'failed', "
@@ -323,7 +323,7 @@ def check_votes(db, zouzhe):
 def handle_review_timeout(db, zouzhe):
     """Handle reviewing state timeout: critical→failed, normal→auto-go."""
     jishi_list = get_review_agents(zouzhe)
-    current_round = zouzhe["revise_count"] + 1
+    current_round = (zouzhe["revise_count"] or 0) + 1
 
     voted = db.execute(
         "SELECT jishi_id FROM toupiao WHERE zouzhe_id = ? AND round = ?",

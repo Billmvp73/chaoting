@@ -295,7 +295,7 @@ def cmd_vote(args):
             db.close()
             out({"ok": False, "error": "zouzhe not in reviewing state"}, ok=False)
 
-        current_round = zouzhe["revise_count"] + 1
+        current_round = (zouzhe["revise_count"] or 0) + 1
 
         cursor = db.execute(
             "INSERT OR IGNORE INTO toupiao (zouzhe_id, round, jishi_id, agent_id, vote, reason) "
