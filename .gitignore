@@ -14,3 +14,4 @@ __pycache__/
 # Test artifacts
 TEST-*.txt
 CHANGELOG-0*.md
+openclaw-agents-fragment.json
