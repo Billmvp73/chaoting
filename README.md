@@ -1,21 +1,22 @@
 # 朝廷 (Chaoting) — 多智能体任务协调系统
 
-> 以古代中国朝廷官制为原型的 OpenClaw 多智能体任务编排框架。
+> 以古代中国朝廷官制为原型的 TheMachine 多智能体任务编排框架。
 
 ---
 
 ## 项目简介
 
-**朝廷**是一套运行于 OpenClaw 环境的多智能体任务协调系统。它借鉴古代朝廷的官僚架构，将复杂任务拆解后分派给不同职能的 AI 智能体（"部门"）协作完成。
+**朝廷**是一套运行于 TheMachine 环境的多智能体任务协调系统。它借鉴古代朝廷的官僚架构，将复杂任务拆解后分派给不同职能的 AI 智能体（"部门"）协作完成。
 
 各智能体通过共享 SQLite 数据库进行协调（Stigmergy 模式），**无需直接通信**，任务流转全部通过数据库状态机驱动。
 
 ### 核心特性
 
 - 📜 **奏折驱动** — 每个任务以"奏折（ZZ）"为单位流转
-- 🏛️ **职能分离** — 规划、编码、运维、数据、文档各司其职
+- 🏛️ **职能分离** — 规划、审核、编码、运维、数据、文档各司其职
+- 🗳️ **门下省审核** — Go/No-Go 投票机制，多给事中并行审核方案
 - ⚙️ **状态机保护** — CAS（Compare-And-Swap）防止并发冲突
-- 🔄 **自动重试** — 超时任务自动恢复，支持最大重试次数
+- 🔄 **封驳重提** — 方案被否决后自动退回修改，最多三轮
 - 🗃️ **上下文积累** — 智能体间共享领域知识（典籍/dianji）
 
 ---
@@ -25,74 +26,156 @@
 ### 整体架构
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     朝廷系统                              │
-│                                                           │
-│  ┌──────────┐    ┌──────────┐    ┌─────────────────────┐ │
-│  │ 用户/触发 │───▶│ 调度器   │───▶│  中书省 (zhongshu)  │ │
-│  └──────────┘    │(dispatcher│    │  规划·拆解任务       │ │
-│                  │  .py)    │    └──────────┬──────────┘ │
-│                  └──────────┘               │ plan       │
-│                       ▲                     ▼            │
-│                       │            ┌─────────────────┐   │
-│                       │            │  执行部门        │   │
-│                       │            │  bingbu / gongbu│   │
-│                       └────────────│  hubu / libu 等  │   │
-│                      状态轮询       └─────────────────┘   │
-│                                                           │
-│              共享: chaoting.db (SQLite WAL)               │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                         朝廷系统                               │
+│                                                                │
+│  ┌──────────┐    ┌──────────┐    ┌──────────────────────────┐ │
+│  │ 司礼监    │───▶│ 调度器    │───▶│  中书省 (zhongshu)       │ │
+│  │ (用户入口) │    │(dispatcher│    │  规划·拆解任务            │ │
+│  └──────────┘    │  .py)    │    └───────────┬──────────────┘ │
+│                  └──────────┘                │ plan            │
+│                       ▲                      ▼                │
+│                       │            ┌──────────────────────┐   │
+│                       │            │  门下省 (给事中)       │   │
+│                       │            │  🔬 技术 ⚠️ 风险       │   │
+│                       │            │  📦 资源 🛡️ 合规       │   │
+│                       │            └───────────┬──────────┘   │
+│                       │               go/nogo  │              │
+│                       │                        ▼              │
+│                       │            ┌──────────────────────┐   │
+│                       │            │  六部 (执行)          │   │
+│                       │            │  ⚔️兵 🔨工 📊户       │   │
+│                       └────────────│  📚礼 ⚖️刑 👔吏       │   │
+│                      状态轮询       └──────────────────────┘   │
+│                                                                │
+│                共享: chaoting.db (SQLite WAL)                  │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ### 任务状态机
 
 ```
-created → planning → executing → done
-                ↘               ↘
-                 └──────────────→ failed
-                                  timeout
+                    ┌─────────────────────────────┐
+                    │          封驳退回             │
+                    ▼                              │
+created → planning → reviewing → executing → done │
+              ▲         │                    ↘     │
+              │         ▼                  failed  │
+              │      revising ─────────────────────┘
+              │         │
+              └─────────┘  (三驳 → failed)
 ```
 
 | 状态 | 说明 | 负责方 |
 |------|------|--------|
-| `created` | 任务已创建，等待调度 | 用户/API |
-| `planning` | 已派发给中书省，规划中 | 中书省 (zhongshu) |
-| `executing` | 规划完成，执行中 | 目标部门 |
-| `done` | 任务完成 | 执行部门 |
-| `failed` | 任务失败 | 执行部门 / 系统 |
+| `created` | 任务已创建，等待调度 | 司礼监 |
+| `planning` | 已派发给中书省，规划中 | 中书省 |
+| `reviewing` | 门下省审议中，等待给事中投票 | 给事中 |
+| `revising` | 被封驳，退回中书省修改 | 系统 → 中书省 |
+| `executing` | 审核通过，执行中 | 六部 |
+| `done` | 任务完成 | 六部 |
+| `failed` | 任务失败（含三驳失败） | 各方 |
 | `timeout` | 超时后重试耗尽 | 调度器 |
 
-### 核心组件
+---
 
-| 文件 | 说明 |
-|------|------|
-| `chaoting.db` | SQLite 数据库（WAL 模式） |
-| `dispatcher.py` | 调度守护进程，每 5 秒轮询 |
-| `chaoting` | 智能体 CLI 工具（可执行 Python 脚本） |
-| `init_db.py` | 数据库 Schema 初始化脚本 |
-| `SPEC.md` | 系统详细技术规范 |
+## 门下省 — Go/No-Go 审核机制
 
-### 数据库表
+中书省规划完成后，奏折不直接执行，而是先经门下省审议。
+
+### 给事中角色
+
+| ID | 角色 | Emoji | 审核视角 |
+|----|------|-------|---------|
+| `jishi_tech` | 技术给事中 | 🔬 | 技术可行性、架构合理性、依赖风险 |
+| `jishi_risk` | 风险给事中 | ⚠️ | 回滚方案、数据安全、破坏性操作 |
+| `jishi_resource` | 资源给事中 | 📦 | 工时合理性、token 预算 |
+| `jishi_compliance` | 合规给事中 | 🛡️ | 安全合规、权限边界 |
+
+### 审核规格
+
+司礼监创建奏折时决定审核级别：
+
+| 级别 | review_required | 给事中 |
+|------|----------------|--------|
+| 小事 | 0 | 跳过门下省 |
+| 普通 | 1 | jishi_tech |
+| 重要 | 1 | jishi_tech + jishi_risk |
+| 军国大事 | 1 | 全部四位给事中 |
+
+### 投票流程
+
+```bash
+# 准奏
+chaoting vote ZZ-20260308-001 go "方案可行，风险可控" --as jishi_tech
+
+# 封驳
+chaoting vote ZZ-20260308-001 nogo "缺少回滚方案" --as jishi_risk
+```
+
+### 封驳与重提
+
+- 有任何 nogo → 进入 `revising`，旧方案存入 `plan_history`，`plan` 清空
+- 调度器自动退回中书省，附带封驳意见
+- 中书省修改方案后重新提交，进入第二轮投票
+- **朝规五：三驳呈御前** — 连续封驳 3 次后标记 `failed`，通知司礼监人工决断
+
+### 超时处理
+
+- 普通任务：给事中超时未投 → 默认准奏（go），但通知司礼监
+- 军国大事（priority=critical）：超时 → 直接 failed，需人工介入
+
+### 安全机制
+
+- **CAS 保护**：所有状态转换用 `UPDATE WHERE state=expected`，检查 rowcount
+- **UNIQUE 约束**：`toupiao(zouzhe_id, round, jishi_id)` 防止重复投票
+- **BEGIN IMMEDIATE**：投票操作在事务内完成
+- **plan=NULL**：进入 revising 时清空旧方案，防幽灵执行
+
+---
+
+## 组织编制
+
+### 三省
+
+| 机构 | Agent ID | 角色 |
+|------|----------|------|
+| 司礼监 | `main` | 用户入口（Mr. Reese） |
+| 中书省 | `zhongshu` 📜 | 规划 |
+| 门下省 | `jishi_*` | 审核（见上表） |
+
+### 六部
+
+| 部门 | Agent ID | Emoji | 职责 |
+|------|----------|-------|------|
+| 兵部 | `bingbu` | ⚔️ | 编码开发 |
+| 工部 | `gongbu` | 🔨 | 运维部署 |
+| 户部 | `hubu` | 📊 | 数据处理 |
+| 礼部 | `libu` | 📚 | 文档撰写 |
+| 刑部 | `xingbu` | ⚖️ | 安全审计 |
+| 吏部 | `libu_hr` | 👔 | 项目管理 |
+
+### 基础设施
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| 调度器 | `dispatcher.py` | systemd 常驻守护进程，5s 轮询 |
+| CLI | `chaoting` | 智能体命令行工具 |
+| 数据库 | `chaoting.db` | SQLite WAL 模式 |
+| Schema | `init_db.py` | 数据库初始化/迁移 |
+
+---
+
+## 数据库表
 
 | 表名 | 含义 | 用途 |
 |------|------|------|
-| `zouzhe` | 奏折 | 任务主表 |
+| `zouzhe` | 奏折 | 任务主表（含 review 字段） |
+| `toupiao` | 投票 | 给事中投票记录 |
 | `liuzhuan` | 流转 | 状态变更日志 |
 | `zoubao` | 奏报 | 进度上报记录 |
-| `dianji` | 典籍 | 跨任务领域知识积累 |
+| `dianji` | 典籍 | 跨任务领域知识 |
 | `qianche` | 前车 | 智能体经验教训 |
-
-### 可用执行部门
-
-| 部门 ID | 名称 | 职责 |
-|---------|------|------|
-| `zhongshu` | 中书省 | 任务规划与拆解（固定入口） |
-| `bingbu` | 兵部 | 编码开发 |
-| `gongbu` | 工部 | 运维部署 |
-| `hubu` | 户部 | 数据处理 |
-| `libu` | 礼部 | 文档撰写 |
-| `xingbu` | 刑部 | 审计安全 |
-| `libu_hr` | 吏部 | 项目管理 |
 
 ---
 
@@ -104,116 +187,60 @@ created → planning → executing → done
 # 初始化数据库
 python3 ~/.themachine/chaoting/init_db.py
 
-# 将 CLI 加入 PATH（二选一）
-ln -s ~/.themachine/chaoting/chaoting /usr/local/bin/chaoting
-# 或者
-export PATH="$PATH:$HOME/.themachine/chaoting"
-
-# 启动调度器（systemd 用户服务）
+# 启动调度器
 systemctl --user enable --now chaoting-dispatcher
 
-# 验证服务运行
+# 验证
 systemctl --user status chaoting-dispatcher
 ```
 
-### 任务 ID 格式
-
-```
-ZZ-YYYYMMDD-NNN
-例: ZZ-20260308-001
-```
-
-### 智能体 CLI 命令
-
-#### 接取任务
+### CLI 命令速查
 
 ```bash
+# 接旨
 chaoting pull ZZ-20260308-001
+
+# 提交规划（中书省）
+chaoting plan ZZ-20260308-001 '{"steps":[...],"target_agent":"bingbu",...}'
+
+# 投票（给事中）
+chaoting vote ZZ-20260308-001 go "理由" --as jishi_tech
+chaoting vote ZZ-20260308-001 nogo "理由" --as jishi_risk
+
+# 上报进度
+chaoting progress ZZ-20260308-001 "进展描述"
+
+# 标记完成
+chaoting done ZZ-20260308-001 "产出" "摘要"
+
+# 上报失败
+chaoting fail ZZ-20260308-001 "失败原因"
+
+# 更新领域知识
+chaoting context bingbu "key" "value" --source ZZ-20260308-001
 ```
 
-返回任务详情、历史典籍（dianji）、前车之鉴（qianche）和流转记录。
-
-#### 中书省提交规划
-
-```bash
-chaoting plan ZZ-20260308-001 '{
-  "steps": ["步骤1", "步骤2"],
-  "target_agent": "bingbu",
-  "repo_path": "/absolute/path/to/repo",
-  "target_files": ["src/main.py"],
-  "acceptance_criteria": "单元测试全部通过"
-}'
-```
-
-提交后任务进入 `executing` 状态，调度器自动派发给目标部门。
-
-#### 上报进度
-
-```bash
-chaoting progress ZZ-20260308-001 "已完成第一阶段，正在处理边界情况"
-```
-
-#### 标记完成
-
-```bash
-chaoting done ZZ-20260308-001 "PR #42 已合并" "功能上线，含单元测试"
-```
-
-#### 上报失败
-
-```bash
-chaoting fail ZZ-20260308-001 "依赖版本冲突，无法在 Python 3.11 下编译"
-```
-
-#### 更新领域知识
-
-```bash
-chaoting context bingbu "repo:myproject:auth.py" \
-  "JWT 验证逻辑在 verify_token()，密钥从环境变量读取" \
-  --source ZZ-20260308-001
-```
-
-### 典型任务流程
+### 典型流程
 
 ```
-1. 用户创建任务 (state: created)
-         ↓
-2. 调度器检测到 created 状态，派发给中书省 (state: planning)
-         ↓
-3. 中书省接旨: chaoting pull ZZ-XXXXXXXX-NNN
-         ↓
-4. 中书省分析任务，提交规划: chaoting plan ...
-         ↓
-5. 调度器检测到 executing + target_agent，派发给目标部门
-         ↓
-6. 目标部门接旨: chaoting pull ZZ-XXXXXXXX-NNN
-         ↓
-7. 目标部门执行，定期上报: chaoting progress ...
-         ↓
-8. 目标部门完成: chaoting done ... / chaoting fail ...
+1. 司礼监创建奏折 (created)
+2. 调度器 → 中书省 (planning)
+3. 中书省 pull → 分析 → plan (reviewing)
+4. 门下省给事中投票 (go/nogo)
+   ├─ 全票通过 → executing → 六部执行 → done
+   └─ 有封驳 → revising → 退回中书省修改 → 重新 reviewing
+      └─ 三驳 → failed（呈御前裁决）
 ```
-
-### 超时与重试
-
-- 默认超时：600 秒（可在任务中配置 `timeout_sec`）
-- 默认最大重试：2 次（可配置 `max_retries`）
-- 调度器每 30 秒检测超时，自动重置 `dispatched_at` 触发重试
-- 重试耗尽后进入 `timeout` 状态
 
 ---
 
-## 任务命名约定
+## 命名约定
 
-- **状态、CLI 命令** → 英文（created, planning, executing, done, failed）
-- **表名、部门名** → 拼音（zouzhe, liuzhuan, zhongshu, bingbu）
+- **状态、CLI 命令** → 英文（created, planning, reviewing, executing）
+- **表名、部门名** → 拼音（zouzhe, toupiao, zhongshu, bingbu）
 - **任务 ID** → `ZZ-YYYYMMDD-NNN`
-
----
 
 ## 详细规范
 
-完整技术规范见 [`SPEC.md`](./SPEC.md)，包含：
-- 完整 SQLite Schema
-- 调度器并发控制实现
-- CAS 保护机制说明
-- systemd 服务配置
+- MVP 规范：[`SPEC.md`](./SPEC.md)
+- 门下省规范：[`SPEC-menxia.md`](./SPEC-menxia.md)
