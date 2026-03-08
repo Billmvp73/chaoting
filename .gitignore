@@ -1,0 +1,9 @@
+chaoting.db
+chaoting.db-wal
+chaoting.db-shm
+dispatch-*.log
+__pycache__/
+*.pyc
+chaoting.db.bak-*
+TEST-*.txt
+CHANGELOG-0*.md

@@ -1,0 +1,12 @@
+[Unit]
+Description=Chaoting Dispatcher
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/.themachine/chaoting/dispatcher.py
+Restart=always
+RestartSec=5
+Environment=PATH=%h/.nvm/versions/node/v22.22.0/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
