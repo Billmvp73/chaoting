@@ -4,7 +4,8 @@ set -euo pipefail
 # install.sh — Install chaoting dispatcher as a systemd user service
 #
 # Usage:
-#   ./install.sh                    # auto-detect openclaw CLI
+#   ./install.sh                    # install (auto-detect openclaw CLI)
+#   ./install.sh --dry-run          # preview generated service, don't install
 #   OPENCLAW_CLI=/path/to/openclaw ./install.sh   # specify CLI path
 #
 # Prerequisites:
@@ -12,9 +13,14 @@ set -euo pipefail
 #   - OpenClaw CLI installed and in PATH (or set OPENCLAW_CLI)
 #   - systemd user session (loginctl enable-linger $USER)
 
+DRY_RUN=0
+if [ "${1:-}" = "--dry-run" ]; then
+    DRY_RUN=1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHAOTING_DIR="${CHAOTING_DIR:-$SCRIPT_DIR}"
-OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-$HOME/.themachine}"
+OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
 
 # Preconditions
 if ! command -v python3 >/dev/null 2>&1; then
@@ -37,24 +43,8 @@ if [ -z "${OPENCLAW_CLI:-}" ]; then
     fi
 fi
 
-echo "=== Chaoting Installer ==="
-echo "  CHAOTING_DIR:  $CHAOTING_DIR"
-echo "  OPENCLAW_CLI:  $OPENCLAW_CLI"
-echo "  DB_PATH:       $CHAOTING_DIR/chaoting.db"
-echo "  STATE_DIR:     $OPENCLAW_STATE_DIR"
-echo ""
-
-# Step 1: Initialize database
-echo "[1/3] Initializing database..."
-CHAOTING_DIR="$CHAOTING_DIR" python3 "$CHAOTING_DIR/src/init_db.py"
-
-# Step 2: Generate and install systemd service
-echo "[2/3] Installing systemd user service..."
-SERVICE_DIR="$HOME/.config/systemd/user"
-mkdir -p "$SERVICE_DIR"
-
-cat > "$SERVICE_DIR/chaoting-dispatcher.service" << EOF
-[Unit]
+# Generate service content
+SERVICE_CONTENT="[Unit]
 Description=Chaoting Dispatcher
 After=network.target
 
@@ -69,13 +59,41 @@ Environment=PATH=$(dirname "$OPENCLAW_CLI"):/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
 
 [Install]
-WantedBy=default.target
-EOF
+WantedBy=default.target"
+
+echo "=== Chaoting Installer ==="
+echo "  CHAOTING_DIR:  $CHAOTING_DIR"
+echo "  OPENCLAW_CLI:  $OPENCLAW_CLI"
+echo "  DB_PATH:       $CHAOTING_DIR/chaoting.db"
+echo "  STATE_DIR:     $OPENCLAW_STATE_DIR"
+echo ""
+
+if [ "$DRY_RUN" = "1" ]; then
+    echo "[dry-run] Generated service file:"
+    echo "---"
+    echo "$SERVICE_CONTENT"
+    echo "---"
+    echo ""
+    echo "[dry-run] Would initialize database at: $CHAOTING_DIR/chaoting.db"
+    echo "[dry-run] Would install service to: ~/.config/systemd/user/chaoting-dispatcher.service"
+    echo "[dry-run] No changes made."
+    exit 0
+fi
+
+# Step 1: Initialize database
+echo "[1/3] Initializing database..."
+CHAOTING_DIR="$CHAOTING_DIR" python3 "$CHAOTING_DIR/src/init_db.py"
+
+# Step 2: Install systemd service
+echo "[2/3] Installing systemd user service..."
+SERVICE_DIR="$HOME/.config/systemd/user"
+mkdir -p "$SERVICE_DIR"
+echo "$SERVICE_CONTENT" > "$SERVICE_DIR/chaoting-dispatcher.service"
 
 # Step 3: Enable and start
 systemctl --user daemon-reload
 systemctl --user enable chaoting-dispatcher
-systemctl --user start chaoting-dispatcher
+systemctl --user restart chaoting-dispatcher
 
 echo "[3/3] Service installed and started."
 echo ""
