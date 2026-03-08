@@ -264,8 +264,7 @@ chaoting/
 │   ├── SPEC.md            # MVP 技术规范
 │   ├── SPEC-menxia.md     # 门下省审核机制规范
 │   ├── ROADMAP.md         # 版本规划
-│   ├── CHANGELOG.md       # 变更日志
-│   └── CONTRIBUTORS.md    # 参与者名单
+│   └── CHANGELOG.md       # 变更日志
 ├── examples/
 │   ├── agent-souls.md     # Agent SOUL.md 模板
 │   └── openclaw-agents.yaml  # OpenClaw agent 配置示例
