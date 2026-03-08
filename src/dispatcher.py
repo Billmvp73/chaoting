@@ -58,7 +58,7 @@ def get_review_agents(zouzhe):
     agents_json = zouzhe["review_agents"]
     if agents_json:
         return json.loads(agents_json)
-    level = zouzhe.get("review_required", 0) or 0
+    level = zouzhe["review_required"] if zouzhe["review_required"] else 0
     return REVIEW_LEVEL_MAP.get(level, DEFAULT_REVIEW_AGENTS)
 
 OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "openclaw")

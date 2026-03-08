@@ -14,6 +14,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHAOTING_DIR="${CHAOTING_DIR:-$SCRIPT_DIR}"
+OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-$HOME/.themachine}"
+
+# Preconditions
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "Error: python3 not found in PATH."
+    exit 1
+fi
+
+if ! command -v systemctl >/dev/null 2>&1; then
+    echo "Error: systemctl not found. This installer currently requires systemd user services."
+    exit 1
+fi
 
 # Find OpenClaw CLI
 if [ -z "${OPENCLAW_CLI:-}" ]; then
@@ -29,6 +41,7 @@ echo "=== Chaoting Installer ==="
 echo "  CHAOTING_DIR:  $CHAOTING_DIR"
 echo "  OPENCLAW_CLI:  $OPENCLAW_CLI"
 echo "  DB_PATH:       $CHAOTING_DIR/chaoting.db"
+echo "  STATE_DIR:     $OPENCLAW_STATE_DIR"
 echo ""
 
 # Step 1: Initialize database
@@ -51,6 +64,7 @@ Restart=always
 RestartSec=5
 Environment=CHAOTING_DIR=${CHAOTING_DIR}
 Environment=OPENCLAW_CLI=${OPENCLAW_CLI}
+Environment=OPENCLAW_STATE_DIR=${OPENCLAW_STATE_DIR}
 Environment=PATH=$(dirname "$OPENCLAW_CLI"):/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
 
