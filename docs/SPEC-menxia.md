@@ -1,6 +1,6 @@
 # 门下省 (Menxia) — Go/No-Go 审核机制 Spec v2
 
-> 基于 Root/Shaw 审核反馈修订。所有 Critical/High 问题已修复。
+> 经多轮审核修订。所有 Critical/High 问题已修复。
 
 ## 概述
 
@@ -47,7 +47,7 @@ CREATE TABLE toupiao (
     zouzhe_id   TEXT NOT NULL,
     round       INTEGER DEFAULT 1,
     jishi_id    TEXT NOT NULL,       -- 给事中角色 ID（jishi_tech, jishi_risk 等）
-    agent_id    TEXT NOT NULL,       -- 实际执行的 agent ID（root, shaw 等）
+    agent_id    TEXT NOT NULL,       -- 实际执行的 agent ID（jishi_tech, jishi_risk 等）
     vote        TEXT NOT NULL,       -- "go" 或 "nogo"
     reason      TEXT,
     timestamp   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
