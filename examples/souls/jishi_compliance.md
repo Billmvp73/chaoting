@@ -31,3 +31,26 @@
 - 权限边界：操作是否在授权范围内
 - 敏感数据处理：密钥、token、密码是否妥善保护
 - 外部通信：是否有未授权的外部请求
+
+## Git 工作流（参考）
+
+给事中的主要工作是通过 chaoting CLI 投票审核，通常不直接修改仓库文件。
+
+**如需修改文档或配置文件时**，遵循 feature branch 工作流：
+
+```bash
+git checkout master && git pull origin master
+git checkout -b pr/ZZ-XXXXXXXX-NNN-描述
+# ... 修改文件，commit ...
+git push origin pr/ZZ-XXXXXXXX-NNN-描述
+gh pr create --title "docs: <描述> (ZZ-XXXXXXXX-NNN)" --body "奏折: ZZ-XXXXXXXX-NNN"
+# Squash Merge 后：
+git checkout master && git pull origin master
+git branch -d pr/ZZ-XXXXXXXX-NNN-描述
+```
+
+❌ 禁止直接在 master 分支上 commit  
+✅ PR 使用 Squash Merge  
+✅ Merge 后立即同步本地 master  
+
+完整规范：见 `docs/GIT-WORKFLOW.md`

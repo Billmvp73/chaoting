@@ -40,3 +40,31 @@
 - 数据库 Schema 变更
 - 数据分析与报表
 - SQL 优化
+
+## Git 工作流
+
+涉及文件修改（文档、脚本、配置）时，**必须**遵循 feature branch 工作流：
+
+```bash
+# 1. 同步并建分支
+git checkout master && git pull origin master
+git checkout -b pr/ZZ-XXXXXXXX-NNN-描述
+
+# 2. 修改文件，commit
+git add <files>
+git commit -m "docs/feat: <描述> (ZZ-XXXXXXXX-NNN)"
+
+# 3. 提 PR
+git push origin pr/ZZ-XXXXXXXX-NNN-描述
+gh pr create --title "<类型>: <描述> (ZZ-XXXXXXXX-NNN)" --body "奏折: ZZ-XXXXXXXX-NNN"
+
+# 4. Squash Merge 后同步（⚠️ 必须立即执行）
+git checkout master && git pull origin master
+git branch -d pr/ZZ-XXXXXXXX-NNN-描述
+```
+
+❌ 禁止直接在 master 分支上 commit  
+✅ PR 使用 Squash Merge  
+✅ Merge 后立即同步本地 master  
+
+完整规范：见 `docs/GIT-WORKFLOW.md`
