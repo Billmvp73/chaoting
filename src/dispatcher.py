@@ -197,11 +197,14 @@ def _format_notification(zouzhe: dict, event_type: str, extra: str = "") -> str:
 
 
 def _send_discord_thread(thread_id: str, body: str) -> bool:
-    """Send a message to a Discord Thread via openclaw CLI thread-reply action."""
+    """Send a message to a Discord Thread via openclaw CLI.
+
+    Correct syntax: themachine message thread reply --channel discord -t THREAD_ID -m MSG
+    """
     try:
         result = subprocess.run(
-            [OPENCLAW_CLI, "message", "--channel", "discord",
-             "--action", "thread-reply", "--to", thread_id, "-m", body[:2000]],
+            [OPENCLAW_CLI, "message", "thread", "reply",
+             "--channel", "discord", "-t", thread_id, "-m", body[:2000]],
             capture_output=True,
             timeout=30,
         )
