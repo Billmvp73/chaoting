@@ -132,6 +132,10 @@ def zouzhe_log(zouzhe_id: str, role: str, event_type: str, headline: str,
     Uses RotatingFileHandler (10 MB / backupCount=3).
     Wrapped in try/except — never raises, never blocks main flow.
     """
+    # Parameter guard — invalid inputs silently skipped, never crash caller
+    if not zouzhe_id or not role:
+        log.warning("zouzhe_log: invalid params zouzhe_id=%r role=%r — skipping", zouzhe_id, role)
+        return
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         lines = [
@@ -788,7 +792,7 @@ def check_votes(db, zouzhe):
         for v in votes:
             zouzhe_log(zouzhe["id"], v["jishi_id"], "VOTE",
                        v["vote"].upper(),
-                       jishi=v["jishi_id"], reason=v.get("reason", ""))
+                       jishi=v["jishi_id"], reason=(v["reason"] or ""))
         # Rich APPROVED block in menxia.log
         zouzhe_log(zouzhe["id"], "menxia", "APPROVED",
                    "✅ 门下省准奏，全票通过",
@@ -822,7 +826,7 @@ def check_votes(db, zouzhe):
             for v in votes:
                 zouzhe_log(zouzhe["id"], v["jishi_id"], "VOTE",
                            v["vote"].upper(),
-                           jishi=v["jishi_id"], reason=v.get("reason", ""))
+                           jishi=v["jishi_id"], reason=(v["reason"] or ""))
             zouzhe_log(zouzhe["id"], "menxia", "REJECTED",
                        "⛔ 三驳失败，呈御前裁决",
                        content=_format_votes_content(votes))
@@ -869,7 +873,7 @@ def check_votes(db, zouzhe):
             for v in votes:
                 zouzhe_log(zouzhe["id"], v["jishi_id"], "VOTE",
                            v["vote"].upper(),
-                           jishi=v["jishi_id"], reason=v.get("reason", ""))
+                           jishi=v["jishi_id"], reason=(v["reason"] or ""))
             # Rich PLAN_REVISE_FEEDBACK block in zhongshu.log
             zouzhe_log(zouzhe["id"], "zhongshu", "PLAN_REVISE_FEEDBACK",
                        f"📥 收到门下省封驳意见（第 {current_round} 轮），计划需调整",
