@@ -8,17 +8,11 @@ import sqlite3
 import subprocess
 import threading
 import time
-import urllib.request
 
 CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
 CHAOTING_CLI = os.path.join(CHAOTING_DIR, "src", "chaoting") if os.path.isfile(os.path.join(CHAOTING_DIR, "src", "chaoting")) else os.path.join(CHAOTING_DIR, "chaoting")
 
-# Notification config — set via environment variables
-# DISCORD_NOTIFY_WEBHOOK: Discord webhook URL (preferred)
-# DISCORD_NOTIFY_CHANNEL: Discord channel ID (uses openclaw CLI, fallback)
-DISCORD_NOTIFY_WEBHOOK = os.environ.get("DISCORD_NOTIFY_WEBHOOK", "")
-DISCORD_NOTIFY_CHANNEL = os.environ.get("DISCORD_NOTIFY_CHANNEL", "")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -202,73 +196,8 @@ def _format_notification(zouzhe: dict, event_type: str, extra: str = "") -> str:
     return "\n".join(lines)
 
 
-def _send_discord_channel(recipient: str, body: str) -> bool:
-    """Send a message to a Discord channel.
-
-    Tries in order:
-    1. DISCORD_NOTIFY_WEBHOOK env var (global webhook URL)
-    2. recipient as a webhook URL (starts with http)
-    3. openclaw CLI with recipient or DISCORD_NOTIFY_CHANNEL as channel ID
-    """
-    webhook = DISCORD_NOTIFY_WEBHOOK or (recipient if recipient and recipient.startswith("http") else "")
-    if webhook:
-        try:
-            payload = json.dumps({"content": body[:2000]}).encode("utf-8")
-            req = urllib.request.Request(
-                webhook,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                return resp.status in (200, 204)
-        except Exception as e:
-            log.warning("Discord webhook send failed: %s", e)
-            return False
-
-    # Fallback: openclaw CLI
-    channel_id = recipient or DISCORD_NOTIFY_CHANNEL
-    if not channel_id:
-        log.warning("No Discord channel/webhook configured — notification skipped")
-        return False
-    try:
-        result = subprocess.run(
-            [OPENCLAW_CLI, "message", "--channel", "discord", "--to", channel_id, "-m", body[:2000]],
-            capture_output=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            log.warning("Discord notify CLI failed (rc=%d): %s", result.returncode, result.stderr[:200])
-        return result.returncode == 0
-    except Exception as e:
-        log.warning("Discord notify CLI exception: %s", e)
-        return False
-
-
 def _send_discord_thread(thread_id: str, body: str) -> bool:
-    """Send a message to a Discord Thread.
-
-    Tries in order:
-    1. DISCORD_NOTIFY_WEBHOOK + ?thread_id= query param (standard Discord webhook for threads)
-    2. openclaw CLI thread-reply action
-    """
-    if DISCORD_NOTIFY_WEBHOOK:
-        try:
-            url = f"{DISCORD_NOTIFY_WEBHOOK}?thread_id={thread_id}"
-            payload = json.dumps({"content": body[:2000]}).encode("utf-8")
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                return resp.status in (200, 204)
-        except Exception as e:
-            log.warning("Discord thread webhook send failed (thread=%s): %s", thread_id, e)
-            # Fall through to CLI
-
-    # Fallback: openclaw CLI thread-reply
+    """Send a message to a Discord Thread via openclaw CLI thread-reply action."""
     try:
         result = subprocess.run(
             [OPENCLAW_CLI, "message", "--channel", "discord",
@@ -277,16 +206,16 @@ def _send_discord_thread(thread_id: str, body: str) -> bool:
             timeout=30,
         )
         if result.returncode != 0:
-            log.warning("Discord thread notify CLI failed (rc=%d): %s",
-                        result.returncode, result.stderr[:200])
+            log.warning("Discord thread notify failed (rc=%d, thread=%s): %s",
+                        result.returncode, thread_id, result.stderr[:200])
         return result.returncode == 0
     except Exception as e:
-        log.warning("Discord thread notify CLI exception: %s", e)
+        log.warning("Discord thread notify exception (thread=%s): %s", thread_id, e)
         return False
 
 
 def notify_enqueue(db, zouzhe_id: str, event_type: str, body: str,
-                   channel: str = "discord_channel", recipient: str = None,
+                   channel: str = "discord_thread", recipient: str = None,
                    dedup_extra: str = ""):
     """Non-blocking: write notification to tongzhi queue.
 
@@ -294,20 +223,25 @@ def notify_enqueue(db, zouzhe_id: str, event_type: str, body: str,
     Must be called within an active transaction; caller is responsible for commit.
     Exceptions are caught and logged — never raises.
 
-    If the zouzhe has discord_thread_id set, channel is automatically set to
-    'discord_thread' and recipient to the thread ID (unless explicitly overridden).
+    recipient is the Discord Thread ID. If not provided, looks up discord_thread_id
+    from the zouzhe record. Notifications without a thread_id are silently skipped
+    (no entry written to tongzhi).
     """
-    # Auto-route to Discord Thread if zouzhe has one
-    if channel == "discord_channel" and recipient is None:
+    # Resolve thread_id from zouzhe if not explicitly provided
+    if recipient is None:
         try:
             row = db.execute(
                 "SELECT discord_thread_id FROM zouzhe WHERE id = ?", (zouzhe_id,)
             ).fetchone()
             if row and row["discord_thread_id"]:
-                channel = "discord_thread"
                 recipient = row["discord_thread_id"]
         except Exception:
-            pass  # Fall back to channel notification
+            pass
+
+    # No thread_id — silently skip, no tongzhi entry
+    if not recipient:
+        log.debug("notify_enqueue: no discord_thread_id for %s/%s — skipping", zouzhe_id, event_type)
+        return
 
     dedup_key = f"{zouzhe_id}:{event_type}:{channel}:{recipient or 'default'}"
     if dedup_extra:
@@ -324,12 +258,11 @@ def notify_enqueue(db, zouzhe_id: str, event_type: str, body: str,
 
 
 def notify_worker():
-    """Poll tongzhi for pending notifications and send them. Called from main loop."""
-    # Skip only if no Discord config at all; thread notifications use openclaw CLI
-    if not DISCORD_NOTIFY_WEBHOOK and not DISCORD_NOTIFY_CHANNEL:
-        # Still process discord_thread notifications (uses openclaw CLI directly)
-        pass
+    """Poll tongzhi for pending notifications and send them. Called from main loop.
 
+    All notifications are sent via _send_discord_thread().
+    Entries without a valid recipient (thread_id) are skipped and marked 'skipped'.
+    """
     db = get_db()
     try:
         rows = db.execute(
@@ -340,17 +273,10 @@ def notify_worker():
         for row in rows:
             success = False
             try:
-                if row["channel"] == "discord_channel":
-                    success = _send_discord_channel(row["recipient"], row["body"])
-                elif row["channel"] == "discord_thread":
-                    thread_id = row["recipient"]
-                    if thread_id:
-                        success = _send_discord_thread(thread_id, row["body"])
-                    else:
-                        log.warning("discord_thread channel with no recipient for tongzhi#%d", row["id"])
-                        success = False
-                else:
-                    log.debug("Unsupported channel %s — skipping tongzhi#%d", row["channel"], row["id"])
+                thread_id = row["recipient"]
+                if not thread_id:
+                    # No thread_id — mark skipped, not an error
+                    log.debug("No thread_id for tongzhi#%d — skipping", row["id"])
                     db.execute(
                         "UPDATE tongzhi SET state='skipped', "
                         "updated_at=strftime('%Y-%m-%dT%H:%M:%S','now') WHERE id=?",
@@ -358,6 +284,7 @@ def notify_worker():
                     )
                     db.commit()
                     continue
+                success = _send_discord_thread(thread_id, row["body"])
             except Exception as e:
                 log.warning("notify_worker send error for tongzhi#%d: %s", row["id"], e)
 
