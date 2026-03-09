@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """Chaoting Dispatcher — polls DB and dispatches agents."""
 
+import gzip
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import subprocess
+import tarfile
 import threading
 import time
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
 
 CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
 CHAOTING_CLI = os.path.join(CHAOTING_DIR, "src", "chaoting") if os.path.isfile(os.path.join(CHAOTING_DIR, "src", "chaoting")) else os.path.join(CHAOTING_DIR, "chaoting")
+LOGS_DIR = os.path.join(CHAOTING_DIR, "logs")
 
 
 logging.basicConfig(
@@ -63,6 +69,157 @@ def get_review_agents(zouzhe):
     return REVIEW_LEVEL_MAP.get(level, DEFAULT_REVIEW_AGENTS)
 
 OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "openclaw")
+
+
+# ──────────────────────────────────────────────────────
+# 审计日志系统 — 结构化奏折生命周期追踪
+# ──────────────────────────────────────────────────────
+
+_audit_loggers: dict = {}           # (zouzhe_id, role) -> logging.Logger
+_audit_lock = threading.Lock()      # Protects _audit_loggers dict
+
+
+def _get_audit_logger(zouzhe_id: str, role: str) -> logging.Logger:
+    """Get or create a RotatingFileHandler-backed logger for (zouzhe_id, role)."""
+    key = (zouzhe_id, role)
+    with _audit_lock:
+        if key not in _audit_loggers:
+            log_dir = os.path.join(LOGS_DIR, zouzhe_id)
+            os.makedirs(log_dir, exist_ok=True)
+            log_file = os.path.join(log_dir, f"{role}.log")
+
+            logger_name = f"chaoting.audit.{zouzhe_id}.{role}"
+            logger = logging.getLogger(logger_name)
+            logger.setLevel(logging.INFO)
+            logger.propagate = False   # Don't bubble to root dispatcher logger
+
+            if not logger.handlers:
+                handler = RotatingFileHandler(
+                    log_file,
+                    maxBytes=10 * 1024 * 1024,  # 10 MB
+                    backupCount=3,
+                    encoding="utf-8",
+                    mode="a",
+                )
+                handler.setFormatter(logging.Formatter("%(message)s"))
+                logger.addHandler(handler)
+
+            _audit_loggers[key] = logger
+        return _audit_loggers[key]
+
+
+def zouzhe_log(zouzhe_id: str, role: str, event_type: str, message: str, **kwargs):
+    """Append one structured event line to logs/{zouzhe_id}/{role}.log.
+
+    Format: [YYYY-MM-DD HH:MM:SS] EVENT_TYPE: message | KEY: value ...
+
+    Uses RotatingFileHandler (10 MB / backupCount=3).
+    Wrapped in try/except — never raises, never blocks main flow.
+    """
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        parts = [f"[{timestamp}] {event_type}: {message}"]
+        for k, v in kwargs.items():
+            if v is not None and v != "":
+                parts.append(f"| {k.upper()}: {v}")
+        line = " ".join(parts)
+        logger = _get_audit_logger(zouzhe_id, role)
+        logger.info(line)
+    except Exception as e:
+        log.warning("zouzhe_log failed for %s/%s/%s: %s", zouzhe_id, role, event_type, e)
+
+
+def _enforce_logs_limit(max_bytes: int = 500 * 1024 * 1024):
+    """Delete oldest archives in logs/archive/ until total logs/ size < max_bytes."""
+    try:
+        archive_dir = os.path.join(LOGS_DIR, "archive")
+        if not os.path.isdir(archive_dir):
+            return
+
+        total = sum(
+            os.path.getsize(os.path.join(root, f))
+            for root, _, files in os.walk(LOGS_DIR)
+            for f in files
+        )
+        if total <= max_bytes:
+            return
+
+        archives = sorted(
+            [os.path.join(archive_dir, f) for f in os.listdir(archive_dir) if f.endswith(".tar.gz")],
+            key=os.path.getmtime,
+        )
+        for archive in archives:
+            if total <= max_bytes:
+                break
+            sz = os.path.getsize(archive)
+            os.remove(archive)
+            total -= sz
+            log.info("Deleted old archive %s (freed %d MB)", os.path.basename(archive), sz // (1024 * 1024))
+    except Exception as e:
+        log.warning("_enforce_logs_limit error: %s", e)
+
+
+def _archive_old_logs_worker():
+    """Background daemon: gzip-compress zouzhe log dirs older than 30 days."""
+    try:
+        archive_dir = os.path.join(LOGS_DIR, "archive")
+        os.makedirs(archive_dir, exist_ok=True)
+        cutoff = time.time() - 30 * 86400
+
+        if not os.path.isdir(LOGS_DIR):
+            return
+
+        for zid in os.listdir(LOGS_DIR):
+            if zid == "archive":
+                continue
+            zid_path = os.path.join(LOGS_DIR, zid)
+            if not os.path.isdir(zid_path):
+                continue
+
+            files = [os.path.join(zid_path, f) for f in os.listdir(zid_path) if os.path.isfile(os.path.join(zid_path, f))]
+            if not files:
+                continue
+            newest_mtime = max(os.path.getmtime(f) for f in files)
+            if newest_mtime >= cutoff:
+                continue  # Still recent, skip
+
+            # Close any open handlers for this zouzhe before archiving
+            with _audit_lock:
+                keys_to_remove = [k for k in _audit_loggers if k[0] == zid]
+                for k in keys_to_remove:
+                    try:
+                        for h in _audit_loggers[k].handlers[:]:
+                            h.close()
+                            _audit_loggers[k].removeHandler(h)
+                    except Exception:
+                        pass
+                    del _audit_loggers[k]
+
+            tar_name = os.path.join(archive_dir, f"{zid}.tar.gz")
+            tmp_name = tar_name + ".tmp"
+            try:
+                with tarfile.open(tmp_name, "w:gz") as tar:
+                    tar.add(zid_path, arcname=zid)
+                os.rename(tmp_name, tar_name)
+                shutil.rmtree(zid_path)
+                log.info("Archived logs for %s -> %s", zid, tar_name)
+            except Exception as e:
+                log.warning("Failed to archive %s: %s", zid, e)
+                if os.path.exists(tmp_name):
+                    try:
+                        os.remove(tmp_name)
+                    except Exception:
+                        pass
+
+        _enforce_logs_limit()
+    except Exception as e:
+        log.warning("_archive_old_logs_worker error: %s", e)
+
+
+def archive_old_logs():
+    """Spawn archive worker in a background daemon thread."""
+    t = threading.Thread(target=_archive_old_logs_worker, daemon=True, name="archive-logs")
+    t.start()
 
 
 def get_db():
@@ -339,6 +496,14 @@ def _check_new_done_failed(db):
         for row in rows:
             body = _format_notification(dict(row), event_type)
             notify_enqueue(db, row["id"], event_type, body)
+            # Audit log for CLI-originated completions
+            _event_label = {"done": "COMPLETE", "failed": "FAIL", "timeout": "TIMEOUT"}.get(target_state, target_state.upper())
+            _remark = row["summary"] if target_state == "done" else row["error"] or ""
+            zouzhe_log(row["id"], row["assigned_agent"] or "dispatcher",
+                       _event_label,
+                       f"state={target_state}",
+                       actor=row["assigned_agent"] or "unknown",
+                       remark=_remark)
     db.commit()
 
 
@@ -448,6 +613,9 @@ def dispatch_reviewers(db, zouzhe):
             "VALUES (?, 'dispatcher', ?, 'dispatch_review', ?)",
             (zouzhe["id"], actual_agent, f"reviewing dispatch to {jishi_id}"),
         )
+        zouzhe_log(zouzhe["id"], "menxia", "DISPATCH",
+                   f"dispatcher -> {actual_agent}",
+                   actor="dispatcher", remark=f"reviewing dispatch to {jishi_id}")
         dispatch_agent(actual_agent, zouzhe["id"], zouzhe["timeout_sec"], msg=msg)
 
     db.commit()
@@ -501,6 +669,14 @@ def check_votes(db, zouzhe):
             (zouzhe["id"],),
         )
         db.commit()
+        # Log individual votes
+        for v in votes:
+            zouzhe_log(zouzhe["id"], v["jishi_id"], "VOTE",
+                       v["vote"].upper(),
+                       jishi=v["jishi_id"], reason=v.get("reason", ""))
+        zouzhe_log(zouzhe["id"], "menxia", "STATE",
+                   "reviewing -> executing",
+                   actor="menxia", remark="门下省准奏，全票通过")
         log.info("门下省准奏 %s，全票通过", zouzhe["id"])
         # 通知：审核通过
         _notify_state_change(zouzhe["id"], "review_approved")
@@ -523,6 +699,14 @@ def check_votes(db, zouzhe):
                 (zouzhe["id"],),
             )
             db.commit()
+            # Log nogo votes
+            for v in votes:
+                zouzhe_log(zouzhe["id"], v["jishi_id"], "VOTE",
+                           v["vote"].upper(),
+                           jishi=v["jishi_id"], reason=v.get("reason", ""))
+            zouzhe_log(zouzhe["id"], "menxia", "STATE",
+                       "reviewing -> failed",
+                       actor="menxia", remark="三驳失败，呈御前裁决")
             log.warning("三驳失败 %s，呈御前裁决", zouzhe["id"])
             notify_silijian(dict(zouzhe), "奏折已被封驳3次，请人工决断")
             # 通知：三驳失败
@@ -559,6 +743,14 @@ def check_votes(db, zouzhe):
                 (zouzhe["id"], f"封驳（第{current_round}次），退回中书省"),
             )
             db.commit()
+            # Log votes for this round
+            for v in votes:
+                zouzhe_log(zouzhe["id"], v["jishi_id"], "VOTE",
+                           v["vote"].upper(),
+                           jishi=v["jishi_id"], reason=v.get("reason", ""))
+            zouzhe_log(zouzhe["id"], "menxia", "REVISE",
+                       f"Plan archived to round {current_round}, entering revising",
+                       actor="menxia", remark=f"封驳（第{current_round}次），退回中书省")
             log.info("封驳 %s（第%d次），退回中书省", zouzhe["id"], current_round)
 
 
@@ -645,6 +837,9 @@ def poll_and_dispatch():
                         (row["id"], agent_role, f"{current_state} -> {next_state}"),
                     )
                     db.commit()
+                    zouzhe_log(row["id"], "dispatcher", "STATE",
+                               f"{current_state} -> {next_state}",
+                               actor="dispatcher", remark=f"dispatched to {agent_role}")
                     # For revising → planning, include nogo reasons in the message
                     custom_msg = None
                     if current_state == "revising":
@@ -673,6 +868,9 @@ def poll_and_dispatch():
                     (row["id"], row["assigned_agent"], "executing -> agent dispatch"),
                 )
                 db.commit()
+                zouzhe_log(row["id"], "dispatcher", "DISPATCH",
+                           f"dispatcher -> {row['assigned_agent']}",
+                           actor="dispatcher", remark="executing -> agent dispatch")
                 dispatch_agent(row["assigned_agent"], row["id"], row["timeout_sec"])
 
         # 3. Detect reviewing + dispatched_at IS NULL → dispatch reviewers
@@ -739,6 +937,10 @@ def check_timeouts():
                      f"max retries ({row['max_retries']}) exhausted after {row['timeout_sec']}s timeout"),
                 )
                 db.commit()
+                zouzhe_log(zid, "dispatcher", "TIMEOUT",
+                           f"max retries ({row['max_retries']}) exhausted",
+                           actor="dispatcher",
+                           remark=f"state={row['state']}, timeout_sec={row['timeout_sec']}")
                 log.warning("Timeout %s — max retries exhausted", zid)
                 # 通知：执行超时
                 _notify_state_change(zid, "state_timeout")
@@ -799,6 +1001,7 @@ def main():
     recover_orphans()
 
     last_timeout_check = 0.0
+    last_archive_check = 0.0
     log.info("Entering main loop (poll=%ds, timeout_check=%ds)", POLL_INTERVAL, TIMEOUT_CHECK_INTERVAL)
 
     while True:
@@ -810,6 +1013,10 @@ def main():
             if now - last_timeout_check >= TIMEOUT_CHECK_INTERVAL:
                 check_timeouts()
                 last_timeout_check = now
+
+            if now - last_archive_check >= 3600:   # 每小时归档一次
+                archive_old_logs()
+                last_archive_check = now
         except Exception:
             log.exception("Error in main loop")
 
