@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import subprocess
 import tarfile
+import textwrap
 import threading
 import time
 from datetime import datetime
@@ -117,6 +118,8 @@ def zouzhe_log(zouzhe_id: str, role: str, event_type: str, headline: str,
 
     Block format:
         [YYYY-MM-DD HH:MM:SS] ▶ EVENT_TYPE
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
         headline
 
         KEY: value
@@ -131,7 +134,12 @@ def zouzhe_log(zouzhe_id: str, role: str, event_type: str, headline: str,
     """
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        lines = [f"\n[{timestamp}] ▶ {event_type}", headline]
+        lines = [
+            f"\n[{timestamp}] ▶ {event_type}",
+            LOG_SEPARATOR,
+            "",
+            headline,
+        ]
 
         kv_lines = [f"{k.upper()}: {v}" for k, v in kwargs.items() if v is not None and v != ""]
         if kv_lines:
@@ -152,27 +160,54 @@ def zouzhe_log(zouzhe_id: str, role: str, event_type: str, headline: str,
         log.warning("zouzhe_log failed for %s/%s/%s: %s", zouzhe_id, role, event_type, e)
 
 
+def _wrap(text: str, width: int = 78, indent: str = "   ") -> str:
+    """Wrap long text at width, indenting continuation lines."""
+    if not text or len(text) <= width:
+        return text
+    return textwrap.fill(text, width=width, subsequent_indent=indent)
+
+
 def _format_plan_content(plan_json_str: str) -> str:
-    """Format plan JSON into human-readable multi-line text for log blocks."""
+    """Format plan JSON into sectioned, human-readable multi-line text."""
     if not plan_json_str:
         return "(无方案)"
     try:
         plan = json.loads(plan_json_str)
-        lines = []
+        sections = []
+
+        # 【基本信息】
+        info_lines = ["【基本信息】"]
         if plan.get("target_agent"):
-            lines.append(f"TARGET_AGENT: {plan['target_agent']}")
+            info_lines.append(f"• 目标部门：{plan['target_agent']}")
         if plan.get("repo_path"):
-            lines.append(f"REPO_PATH: {plan['repo_path']}")
+            info_lines.append(f"• 仓库：{plan['repo_path']}")
         if plan.get("target_files"):
             tf = plan["target_files"]
-            lines.append(f"TARGET_FILES: {', '.join(tf) if isinstance(tf, list) else tf}")
-        if plan.get("steps"):
-            lines.append("\n【步骤】")
-            for i, step in enumerate(plan["steps"], 1):
-                lines.append(f"{i}. {step}")
-        if plan.get("acceptance_criteria"):
-            lines.append(f"\n【验收标准】\n{plan['acceptance_criteria']}")
-        return "\n".join(lines) if lines else json.dumps(plan, ensure_ascii=False, indent=2)
+            files_str = ", ".join(tf) if isinstance(tf, list) else str(tf)
+            info_lines.append(f"• 文件：{files_str}")
+        if len(info_lines) > 1:
+            sections.append("\n".join(info_lines))
+
+        # 【执行步骤】
+        steps = plan.get("steps") or []
+        if steps:
+            step_lines = [f"【执行步骤】（共 {len(steps)} 步）", ""]
+            for i, step in enumerate(steps, 1):
+                wrapped = _wrap(str(step), width=74, indent="   ")
+                step_lines.append(f"{i}. {wrapped}")
+            sections.append("\n".join(step_lines))
+
+        # 【验收标准】
+        ac = plan.get("acceptance_criteria")
+        if ac:
+            ac_lines = ["【验收标准】"]
+            for criterion in str(ac).split("\n"):
+                criterion = criterion.strip()
+                if criterion:
+                    ac_lines.append(f"• {_wrap(criterion, width=74, indent='  ')}")
+            sections.append("\n".join(ac_lines))
+
+        return "\n\n".join(sections) if sections else json.dumps(plan, ensure_ascii=False, indent=2)
     except Exception:
         return str(plan_json_str)[:2000]
 
@@ -187,7 +222,8 @@ def _format_votes_content(votes) -> str:
         symbol = "✅ GO" if vote_val == "go" else "❌ NOGO"
         lines.append(f"• {jishi}: {symbol}")
         if reason:
-            lines.append(f"  REASON: {reason}")
+            wrapped_reason = _wrap(reason, width=74, indent="     ")
+            lines.append(f"  REASON: {wrapped_reason}")
     return "\n".join(lines)
 
 
@@ -932,13 +968,28 @@ def poll_and_dispatch():
                     # Rich RECEIVED log for zhongshu (first time) or revising feedback loop
                     if current_state == "created":
                         _desc = (row["description"] or "")[:600]
+                        _review_agents = row["review_agents"] or "default"
+                        _review_lvl = row["review_required"] or 0
+                        # silijian.log — records what was dispatched and why
+                        zouzhe_log(row["id"], "silijian", "CREATED",
+                                   "📜 奏折已创建，派发朝廷流程",
+                                   content=f"【奏折信息】\n"
+                                           f"• 奏折ID：{row['id']}\n"
+                                           f"• 标题：{row['title']}\n"
+                                           f"• 优先级：{row['priority']}\n"
+                                           f"• 审核等级：{_review_lvl}\n"
+                                           f"• 审核部门：{_review_agents}\n"
+                                           f"• 超时设置：{row['timeout_sec']}s\n\n"
+                                           f"【奏折描述】\n{_desc}")
+                        # zhongshu.log — records arrival for planning
                         zouzhe_log(row["id"], "zhongshu", "RECEIVED",
-                                   "📬 从 dispatcher 收到新奏折",
-                                   content=f"ZOUZHE_ID: {row['id']}\n"
-                                           f"TITLE: {row['title']}\n"
-                                           f"PRIORITY: {row['priority']}\n"
-                                           f"TIMEOUT: {row['timeout_sec']}s\n\n"
-                                           f"【描述】\n{_desc}")
+                                   "📬 从 dispatcher 收到新奏折，开始制定方案",
+                                   content=f"【基本信息】\n"
+                                           f"• 奏折ID：{row['id']}\n"
+                                           f"• 标题：{row['title']}\n"
+                                           f"• 优先级：{row['priority']}\n"
+                                           f"• 超时：{row['timeout_sec']}s\n\n"
+                                           f"【任务描述】\n{_desc}")
                     zouzhe_log(row["id"], "dispatcher", "STATE",
                                f"{current_state} -> {next_state}",
                                actor="dispatcher", remark=f"dispatched to {agent_role}")
