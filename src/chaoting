@@ -358,9 +358,12 @@ def cmd_status(args):
 def cmd_revise(args):
     """Rollback a done zouzhe to revising state for full re-planning and re-review.
 
-    Usage: chaoting revise <zouzhe_id> '<reason>'
+    Usage: chaoting revise <zouzhe_id> '<reason>' [--review N]
 
     State transition: done → revising (dispatcher routes revising→planning→zhongshu)
+
+    --review N  Set review_required level for the new round (0-3).
+                Default: 2 (jishi_tech + jishi_risk — 司礼监标准审核级别).
 
     In one atomic transaction:
     1. Archive current toupiao votes into revise_history[].votes, then DELETE them
@@ -372,10 +375,25 @@ def cmd_revise(args):
     exec_revise_count capped at 3 (normal/high) or 5 (critical).
     """
     if len(args) < 2:
-        out({"ok": False, "error": "usage: chaoting revise <zouzhe_id> '<reason>'"}, ok=False)
+        out({"ok": False, "error": "usage: chaoting revise <zouzhe_id> '<reason>' [--review N]"}, ok=False)
 
     zid = args[0]
     reason = args[1]
+
+    # Parse --review flag (default: 2 — 司礼监标准审核级别: jishi_tech + jishi_risk)
+    new_review_required = 2
+    i = 2
+    while i < len(args):
+        if args[i] == "--review" and i + 1 < len(args):
+            try:
+                new_review_required = int(args[i + 1])
+                if new_review_required not in (0, 1, 2, 3):
+                    out({"ok": False, "error": "--review must be 0, 1, 2, or 3"}, ok=False)
+            except ValueError:
+                out({"ok": False, "error": "--review must be an integer (0-3)"}, ok=False)
+            i += 2
+        else:
+            i += 1
 
     # Permission check: only silijian and zhongshu may revise
     caller = os.environ.get("OPENCLAW_AGENT_ID", "")
@@ -448,6 +466,8 @@ def cmd_revise(args):
             "reason": reason,
             "revised_by": caller,
             "revised_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+            "prev_review_required": row["review_required"],
+            "new_review_required": new_review_required,
         }
         existing_history.append(archive_entry)
         new_history_json = json.dumps(existing_history, ensure_ascii=False)
@@ -457,12 +477,15 @@ def cmd_revise(args):
 
         # CAS update: only transition from done
         # Reset revise_count=0 and plan=NULL for fresh planning + review round
+        # Also update review_required to the requested level (default 2)
         cursor = db.execute(
             "UPDATE zouzhe SET "
             "  state = 'revising', "
             "  exec_revise_count = exec_revise_count + 1, "
             "  revise_count = 0, "
             "  plan = NULL, "
+            "  review_required = ?, "
+            "  review_agents = NULL, "
             "  revise_history = ?, "
             "  output = NULL, "
             "  summary = NULL, "
@@ -471,7 +494,7 @@ def cmd_revise(args):
             "  updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
             "WHERE id = ? AND state = 'done' "
             "RETURNING id, exec_revise_count",
-            (new_history_json, zid),
+            (new_review_required, new_history_json, zid),
         )
         result = cursor.fetchone()
         if not result:
@@ -498,7 +521,8 @@ def cmd_revise(args):
                    reason=reason,
                    revise_count=new_count,
                    votes_archived=len(archived_votes),
-                   plan_cleared="YES")
+                   plan_cleared="YES",
+                   review_required=new_review_required)
 
         # Push revise notification to Thread
         thread_id = row["discord_thread_id"]
@@ -513,6 +537,7 @@ def cmd_revise(args):
             "state": "revising",
             "exec_revise_count": new_count,
             "votes_cleared": len(archived_votes),
+            "review_required": new_review_required,
             "reason": reason,
             "revised_by": caller,
         })
