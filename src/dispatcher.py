@@ -550,6 +550,7 @@ def _check_new_done_failed(db):
             _silijian_key = (row["id"], f"SILIJIAN_{_event_label}")
             if _silijian_key not in _audit_logged:
                 _audit_logged.add(_silijian_key)
+                log.info("Triggering silijian notify for %s/%s", row["id"], target_state)
                 try:
                     thread_id = row["discord_thread_id"] or "(无 Thread)"
                     if target_state == "done":
@@ -581,14 +582,19 @@ def _check_new_done_failed(db):
 def notify_silijian(zouzhe, message: str):
     """Notify silijian (司礼监) about events requiring attention."""
     msg = f"⚠️ 司礼监通知\n\n奏折: {zouzhe['id']}\n{message}"
+    log.info("Notifying silijian about %s", zouzhe['id'])
     try:
-        subprocess.run(
-            [OPENCLAW_CLI, "agent", "--agent", "silijian",
-             "-m", msg, "--timeout", "120"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        result = subprocess.run(
+            [OPENCLAW_CLI, "agent", "--agent", "silijian", "-m", msg],
+            capture_output=True,
             timeout=180,
         )
+        if result.returncode != 0:
+            log.warning("notify_silijian rc=%d for %s: %s",
+                        result.returncode, zouzhe['id'],
+                        result.stderr[:200] if result.stderr else "")
+        else:
+            log.info("notify_silijian sent for %s", zouzhe['id'])
     except Exception as e:
         log.error("Failed to notify silijian for %s: %s", zouzhe["id"], e)
 
