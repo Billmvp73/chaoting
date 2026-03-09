@@ -319,36 +319,26 @@ def cmd_status(args):
 
 
 def cmd_revise(args):
-    """Rollback a done zouzhe back to executing (or revising) for rework.
+    """Rollback a done zouzhe to revising state for full re-planning and re-review.
 
-    Usage: chaoting revise <zouzhe_id> '<reason>' [--to executing|planning]
+    Usage: chaoting revise <zouzhe_id> '<reason>'
 
-    Only silijian and zhongshu may initiate a revise (checked via OPENCLAW_AGENT_ID).
-    exec_revise_count is capped at 3 for non-critical tasks.
-    The current output/summary are archived to revise_history before clearing.
+    State transition: done → revising (dispatcher routes revising→planning→zhongshu)
+
+    In one atomic transaction:
+    1. Archive current toupiao votes into revise_history[].votes, then DELETE them
+    2. Archive output/summary into revise_history[]
+    3. Reset revise_count=0, plan=NULL (fresh planning round)
+    4. Set state=revising, increment exec_revise_count, clear output/summary
+
+    Only silijian and zhongshu may initiate (OPENCLAW_AGENT_ID).
+    exec_revise_count capped at 3 (normal/high) or 5 (critical).
     """
     if len(args) < 2:
-        out({"ok": False, "error": "usage: chaoting revise <zouzhe_id> '<reason>' [--to executing|planning]"}, ok=False)
+        out({"ok": False, "error": "usage: chaoting revise <zouzhe_id> '<reason>'"}, ok=False)
 
     zid = args[0]
     reason = args[1]
-
-    # Parse --to flag (default: executing)
-    target_state = "executing"
-    i = 2
-    while i < len(args):
-        if args[i] == "--to" and i + 1 < len(args):
-            val = args[i + 1]
-            if val == "planning":
-                # Route through revising so dispatcher uses the existing revising→planning chain
-                target_state = "revising"
-            elif val == "executing":
-                target_state = "executing"
-            else:
-                out({"ok": False, "error": "--to must be 'executing' or 'planning'"}, ok=False)
-            i += 2
-        else:
-            i += 1
 
     # Permission check: only silijian and zhongshu may revise
     caller = os.environ.get("OPENCLAW_AGENT_ID", "")
@@ -374,7 +364,7 @@ def cmd_revise(args):
             db.close()
             out({"ok": False, "error": f"只有 done 状态的奏折可返工，当前状态: '{row['state']}'"}, ok=False)
 
-        # Check revise count cap (non-critical: max 3)
+        # Check revise count cap
         current_count = row["exec_revise_count"] or 0
         max_revises = 5 if row["priority"] == "critical" else 3
         if current_count >= max_revises:
@@ -386,7 +376,25 @@ def cmd_revise(args):
                 "exec_revise_count": current_count,
             }, ok=False)
 
-        # Archive current output/summary into revise_history
+        # Archive current toupiao votes (all rounds) before deleting
+        vote_rows = db.execute(
+            "SELECT round, jishi_id, agent_id, vote, reason, timestamp "
+            "FROM toupiao WHERE zouzhe_id = ? ORDER BY round, id",
+            (zid,),
+        ).fetchall()
+        archived_votes = [
+            {
+                "round": v["round"],
+                "jishi_id": v["jishi_id"],
+                "agent_id": v["agent_id"],
+                "vote": v["vote"],
+                "reason": v["reason"],
+                "timestamp": v["timestamp"],
+            }
+            for v in vote_rows
+        ]
+
+        # Build revise_history archive entry (includes votes)
         existing_history = []
         if row["revise_history"]:
             try:
@@ -398,19 +406,26 @@ def cmd_revise(args):
             "round": current_count + 1,
             "output": row["output"],
             "summary": row["summary"],
+            "plan": json.loads(row["plan"]) if row["plan"] else None,
+            "votes": archived_votes,
             "reason": reason,
             "revised_by": caller,
             "revised_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
-            "to_state": target_state,
         }
         existing_history.append(archive_entry)
         new_history_json = json.dumps(existing_history, ensure_ascii=False)
 
+        # Delete archived votes from toupiao (clean slate for new review round)
+        db.execute("DELETE FROM toupiao WHERE zouzhe_id = ?", (zid,))
+
         # CAS update: only transition from done
+        # Reset revise_count=0 and plan=NULL for fresh planning + review round
         cursor = db.execute(
             "UPDATE zouzhe SET "
-            "  state = ?, "
+            "  state = 'revising', "
             "  exec_revise_count = exec_revise_count + 1, "
+            "  revise_count = 0, "
+            "  plan = NULL, "
             "  revise_history = ?, "
             "  output = NULL, "
             "  summary = NULL, "
@@ -419,7 +434,7 @@ def cmd_revise(args):
             "  updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
             "WHERE id = ? AND state = 'done' "
             "RETURNING id, exec_revise_count",
-            (target_state, new_history_json, zid),
+            (new_history_json, zid),
         )
         result = cursor.fetchone()
         if not result:
@@ -430,39 +445,37 @@ def cmd_revise(args):
         new_count = result["exec_revise_count"]
 
         # Audit trail in liuzhuan
-        to_role = row["assigned_agent"] or "dispatcher"
         db.execute(
             "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
-            "VALUES (?, ?, ?, 'revise', ?)",
-            (zid, caller, to_role,
-             f"退回修改（第 {new_count} 次），原因：{reason}"),
+            "VALUES (?, ?, 'zhongshu', 'revise', ?)",
+            (zid, caller,
+             f"退回修改（第 {new_count} 次），原因：{reason}；投票已清除，重新进入规划"),
         )
 
         db.execute("COMMIT")
         db.close()
+
         zouzhe_log(zid, caller, "STATE_TRANSITION",
-                   f"done → {target_state}",
+                   "done → revising（重新规划+评审）",
                    actor=caller,
                    reason=reason,
-                   revise_count=new_count)
+                   revise_count=new_count,
+                   votes_archived=len(archived_votes),
+                   plan_cleared="YES")
+
         # Push revise notification to Thread
-        thread_id = row["discord_thread_id"] if row else None
-        if not thread_id:
-            # row from RETURNING doesn't have discord_thread_id — fetch separately
-            _db2 = get_db()
-            _r = _db2.execute("SELECT discord_thread_id FROM zouzhe WHERE id = ?", (zid,)).fetchone()
-            thread_id = _r["discord_thread_id"] if _r else None
-            _db2.close()
+        thread_id = row["discord_thread_id"]
         if thread_id:
             _send_thread_notify(
                 thread_id,
-                _fmt_revise_thread(zid, caller, reason, new_count, target_state),
+                _fmt_revise_thread(zid, caller, reason, new_count, "revising"),
             )
         out({
             "ok": True,
             "zouzhe_id": zid,
-            "state": target_state,
+            "state": "revising",
             "exec_revise_count": new_count,
+            "votes_cleared": len(archived_votes),
             "reason": reason,
             "revised_by": caller,
         })
