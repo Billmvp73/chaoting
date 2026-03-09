@@ -28,7 +28,7 @@
      --body "奏折: ZZ-XXXXXXXX-NNN"
    ```
 7. **PR 创建后，在 Thread 通知司礼监，等待 review 和 Squash Merge**
-   - 🏛️ **Merge 权限仅属司礼监** — 禁止自行 merge
+   - ⚠️ **禁止自行 merge** — merge 权限仅属司礼监
    - 如有修改意见，在同一分支追加 commit 后 `git push`
 8. **司礼监 Merge 后，立即同步本地 master（⚠️ 必须执行）**：
    ```bash

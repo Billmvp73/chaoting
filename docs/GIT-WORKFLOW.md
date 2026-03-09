@@ -14,6 +14,7 @@
 | ❌ **禁止直接 commit 到 master** | master 分支只接受通过 PR 合并的内容 |
 | ✅ **所有开发在 feature branch 上进行** | 每个奏折对应一个独立分支 |
 | ✅ **PR 使用 Squash Merge** | 保持 master 历史清洁，每个奏折一个 commit |
+| 🏛️ **Merge 权限仅属司礼监** | 执行部门创建 PR 后等待司礼监 review 和 merge，**禁止自行 merge** |
 | ✅ **Merge 后立即同步本地 master** | 防止分歧积累 |
 
 ---
@@ -110,9 +111,16 @@ git commit -m "fix: address review comment — <说明>"
 git push origin pr/ZZ-XXXXXXXX-NNN-feature-name
 ```
 
-### 步骤五：PR Merge（Squash Merge）
+### 步骤五：等待司礼监 Review 和 Merge
 
-**由 Reviewer 或 PR 作者在 GitHub UI 上执行：**
+**⚠️ 重要：Merge 权限仅属司礼监（silijian）。执行部门创建 PR 后，禁止自行 merge。**
+
+执行部门在创建 PR 后的职责：
+1. 在 PR 对应的 Discord Thread 发送通知，格式见 `docs/POLICY-thread-format.md`
+2. 等待司礼监（或指定 reviewer）审阅
+3. 如有修改意见，在同一 feature branch 上追加 commit 后 push
+
+司礼监 merge 时：
 1. 确认 PR 通过 Review
 2. 选择 **"Squash and merge"**（不要用 Merge commit 或 Rebase）
 3. Squash commit 消息格式：
@@ -126,28 +134,28 @@ git push origin pr/ZZ-XXXXXXXX-NNN-feature-name
    Related: ZZ-XXXXXXXX-NNN
    ```
 
-### 步骤六：Merge 后同步本地 master（⚠️ 必须立即执行）
+### 步骤六：司礼监 Merge 后，执行部门同步本地 master（⚠️ 必须立即执行）
 
 ```bash
 # 切回 master
 git checkout master
 
-# 同步远端（必须在 merge 后立即执行）
-git pull origin master   # 或 git pull --rebase origin master
+# 同步远端（司礼监 merge 后必须立即执行）
+git pull origin master
 
 # 验证状态
 git log --oneline -3  # 确认 squash commit 出现在顶端
 git status            # 确认 "Your branch is up to date"
 
-# 删除已合并的 feature branch
-git branch -d pr/ZZ-XXXXXXXX-NNN-feature-name
+# 删除已合并的 feature branch（本地 + 远端）
+git branch -D pr/ZZ-XXXXXXXX-NNN-feature-name
 git push origin --delete pr/ZZ-XXXXXXXX-NNN-feature-name
 ```
 
 ### 步骤七：汇报完成
 
 ```bash
-chaoting done ZZ-XXXXXXXX-NNN "PR #N 已 squash merge 到 master" "摘要"
+chaoting done ZZ-XXXXXXXX-NNN "PR #N 已由司礼监 squash merge 到 master" "摘要"
 ```
 
 ---
