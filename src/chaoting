@@ -27,44 +27,82 @@ def get_db():
     return db
 
 
-def _send_thread_notify(thread_id: str, body: str) -> None:
-    """Send a message to a Discord Thread. Never raises — failure is logged to stderr."""
+def _send_thread_notify(thread_id: str, body: str) -> bool:
+    """Send a message to a Discord Thread. Never raises — failure is logged to stderr.
+    Returns True if the message was sent successfully, False otherwise.
+    """
     if not thread_id:
-        return
+        return False
     try:
-        subprocess.run(
+        result = subprocess.run(
             [OPENCLAW_CLI, "message", "thread", "reply",
              "--channel", "discord", "-t", thread_id, "-m", body[:2000]],
             timeout=30,
             capture_output=True,
             check=False,
         )
+        return result.returncode == 0
     except Exception as exc:
         print(f"[WARN] thread notify failed: {exc}", file=sys.stderr)
+        return False
+
+
+def _update_last_thread_activity(db, zouzhe_id: str) -> None:
+    """Update last_thread_activity timestamp after a successful Thread push."""
+    try:
+        db.execute(
+            "UPDATE zouzhe SET last_thread_activity = strftime('%Y-%m-%dT%H:%M:%S','now') "
+            "WHERE id = ?", (zouzhe_id,)
+        )
+        db.commit()
+    except Exception as exc:
+        print(f"[WARN] last_thread_activity update failed: {exc}", file=sys.stderr)
+
+
+def _dept_prefix(agent: str) -> str:
+    """Return the department prefix for Thread messages per POLICY-thread-format.md."""
+    _MAP = {
+        "bingbu": "【兵部】⚔️",
+        "gongbu": "【工部】🔧",
+        "hubu":   "【户部】💼",
+        "libu":   "【吏部】👥",
+        "libu_hr":"【吏部】👥",
+        "libu_data":"【户部】💼",
+        "xingbu": "【刑部】⚖️",
+        "libu_rites":"【礼部】🎖️",
+        "zhongshu":"【中书省】📝",
+        "menxia": "【门下省】🏛️",
+        "silijian":"【司礼监】🏛️",
+        "jishi_tech": "【技术给事中】🔍",
+        "jishi_risk": "【风险给事中】⚠️",
+        "jishi_resource": "【资源给事中】💰",
+        "jishi_compliance": "【合规给事中】✔️",
+    }
+    return _MAP.get(agent, f"【{agent}】")
 
 
 def _fmt_done_thread(zid: str, agent: str, output: str, summary: str) -> str:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    out_snippet = (output or "")[:500]
+    prefix = _dept_prefix(agent)
+    out_lines = (output or "").strip()[:600]
     return (
-        f"✅ **任务完成**\n\n"
-        f"奏折：{zid}\n"
-        f"完成者：{agent}\n"
+        f"{prefix} 任务完成\n\n"
+        f"奏折：`{zid}`\n"
         f"完成时间：{ts}\n\n"
-        f"【工作内容】\n{out_snippet}\n\n"
-        f"【输出概述】\n{summary or '(无摘要)'}\n\n"
+        f"**【工作内容】**\n{out_lines}\n\n"
+        f"**【输出概述】**\n{summary or '(无摘要)'}\n\n"
         f"如有问题，请在此 Thread 中讨论。"
     )
 
 
 def _fmt_fail_thread(zid: str, agent: str, reason: str) -> str:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    prefix = _dept_prefix(agent)
     return (
-        f"❌ **任务失败**\n\n"
-        f"奏折：{zid}\n"
-        f"执行者：{agent}\n"
+        f"{prefix} 任务失败\n\n"
+        f"奏折：`{zid}`\n"
         f"失败时间：{ts}\n\n"
-        f"【失败原因】\n{reason or '(未说明)'}\n\n"
+        f"**【失败原因】**\n{reason or '(未说明)'}\n\n"
         f"请在此 Thread 中讨论处理方案。"
     )
 
@@ -73,13 +111,13 @@ def _fmt_plan_thread(zid: str, target_agent: str, next_state: str) -> str:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if next_state == "reviewing":
         action = "计划已提交，进入门下省审核"
-        detail = f"执行部门：{target_agent}\n下一状态：reviewing（等待给事中投票）"
+        detail = f"• 负责部门：{target_agent}\n• 下一状态：reviewing（等待给事中投票）"
     else:
         action = "计划已提交，直接进入执行（免审）"
-        detail = f"执行部门：{target_agent}\n下一状态：executing"
+        detail = f"• 负责部门：{target_agent}\n• 下一状态：executing"
     return (
-        f"📋 **中书省完成规划**\n\n"
-        f"奏折：{zid}\n"
+        f"【中书省】📝 规划方案已提出\n\n"
+        f"奏折：`{zid}`\n"
         f"提交时间：{ts}\n\n"
         f"{action}\n{detail}"
     )
@@ -87,12 +125,12 @@ def _fmt_plan_thread(zid: str, target_agent: str, next_state: str) -> str:
 
 def _fmt_vote_thread(zid: str, jishi_id: str, vote: str, reason: str, round_num: int) -> str:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    symbol = "✅ GO（准奏）" if vote == "go" else "❌ NOGO（封驳）"
-    reason_line = f"\n\n【理由】\n{reason}" if reason else ""
+    prefix = _dept_prefix(jishi_id)
+    symbol = "GO ✅" if vote == "go" else "NOGO ❌"
+    reason_line = f"\n\n**【审查意见】**\n{reason}" if reason else ""
     return (
-        f"🗳 **给事中投票**\n\n"
-        f"奏折：{zid}\n"
-        f"给事中：{jishi_id}\n"
+        f"{prefix} 审查完成\n\n"
+        f"奏折：`{zid}`\n"
         f"投票：{symbol}\n"
         f"轮次：第 {round_num} 轮\n"
         f"时间：{ts}"
@@ -103,14 +141,13 @@ def _fmt_vote_thread(zid: str, jishi_id: str, vote: str, reason: str, round_num:
 def _fmt_revise_thread(zid: str, caller: str, reason: str, count: int, target_state: str) -> str:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     target_label = "重新规划（revising）" if target_state == "revising" else "重新执行（executing）"
+    prefix = _dept_prefix(caller)
     return (
-        f"🔄 **奏折退回返工**\n\n"
-        f"奏折：{zid}\n"
-        f"发起者：{caller}\n"
-        f"第 {count} 次返工\n"
-        f"目标状态：{target_label}\n"
+        f"{prefix} 奏折退回返工\n\n"
+        f"奏折：`{zid}`\n"
+        f"第 {count} 次返工 → {target_label}\n"
         f"时间：{ts}\n\n"
-        f"【返工原因】\n{reason}"
+        f"**【返工原因】**\n{reason}"
     )
 
 def out(data, ok=True):
@@ -689,10 +726,12 @@ def cmd_done(args):
 
     # Auto-push completion to Discord Thread (non-blocking)
     if thread_id:
-        _send_thread_notify(
+        sent = _send_thread_notify(
             thread_id,
             _fmt_done_thread(zid, assigned_agent or "unknown", output, summary),
         )
+        if sent:
+            _update_last_thread_activity(db, zid)
 
     out({"ok": True, "zouzhe_id": zid, "state": "done"})
 
@@ -735,10 +774,12 @@ def cmd_fail(args):
 
     # Auto-push failure to Discord Thread (non-blocking)
     if thread_id:
-        _send_thread_notify(
+        sent = _send_thread_notify(
             thread_id,
             _fmt_fail_thread(zid, assigned_agent or "unknown", reason),
         )
+        if sent:
+            _update_last_thread_activity(db, zid)
 
     out({"ok": True, "zouzhe_id": zid, "state": "failed"})
 

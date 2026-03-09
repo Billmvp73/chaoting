@@ -479,6 +479,14 @@ def notify_worker():
                     "updated_at=strftime('%Y-%m-%dT%H:%M:%S','now') WHERE id=?",
                     (row["id"],),
                 )
+                # Update last_thread_activity on the zouzhe record
+                try:
+                    db.execute(
+                        "UPDATE zouzhe SET last_thread_activity = strftime('%Y-%m-%dT%H:%M:%S','now') "
+                        "WHERE id = ?", (row["zouzhe_id"],)
+                    )
+                except Exception:
+                    pass  # Column might not exist in older DBs; non-fatal
                 log.info("Notification sent: tongzhi#%d %s/%s",
                          row["id"], row["zouzhe_id"], row["event_type"])
             else:
@@ -974,6 +982,37 @@ def poll_and_dispatch():
         db.close()
 
 
+def check_thread_activity_warning():
+    """Warn in log when active zouzhe with discord_thread_id have no Thread activity for 15+ min.
+
+    This detects cases where the CLI Thread push failed silently and the dispatcher's
+    tongzhi fallback also hasn't fired yet. Called every 5 minutes from main loop.
+    """
+    db = get_db()
+    try:
+        rows = db.execute("""
+            SELECT id, title, state, assigned_agent, discord_thread_id,
+                   last_thread_activity, updated_at
+            FROM zouzhe
+            WHERE state IN ('planning', 'reviewing', 'executing')
+              AND discord_thread_id IS NOT NULL
+              AND (
+                last_thread_activity IS NULL
+                OR (julianday('now') - julianday(last_thread_activity)) * 1440 > 15
+              )
+        """).fetchall()
+        for row in rows:
+            last = row["last_thread_activity"] or "从未发送"
+            log.warning(
+                "Thread 活跃度告警 %s [%s] 超过 15 分钟无 Thread 消息 | assigned=%s | last_activity=%s",
+                row["id"], row["state"], row["assigned_agent"] or "?", last,
+            )
+    except Exception as e:
+        log.warning("check_thread_activity_warning error: %s", e)
+    finally:
+        db.close()
+
+
 def check_timeouts():
     db = get_db()
     try:
@@ -1085,6 +1124,7 @@ def main():
 
     last_timeout_check = 0.0
     last_archive_check = 0.0
+    last_activity_check = 0.0
     log.info("Entering main loop (poll=%ds, timeout_check=%ds)", POLL_INTERVAL, TIMEOUT_CHECK_INTERVAL)
 
     while True:
@@ -1100,6 +1140,10 @@ def main():
             if now - last_archive_check >= 3600:   # 每小时归档一次
                 archive_old_logs()
                 last_archive_check = now
+
+            if now - last_activity_check >= 300:   # 每5分钟检查 Thread 活跃度
+                check_thread_activity_warning()
+                last_activity_check = now
         except Exception:
             log.exception("Error in main loop")
 
