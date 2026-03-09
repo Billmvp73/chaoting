@@ -80,7 +80,7 @@ OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "openclaw")
 
 # Fallback channel when no discord_thread_id is set on a zouzhe.
 # Notifications without a thread route here instead of being silently dropped.
-DISCORD_FALLBACK_CHANNEL_ID = os.environ.get("DISCORD_FALLBACK_CHANNEL_ID", "1475384414585487463")
+DISCORD_FALLBACK_CHANNEL_ID = os.environ.get("DISCORD_FALLBACK_CHANNEL_ID", "1479959995520127160")
 
 
 # ──────────────────────────────────────────────────────
