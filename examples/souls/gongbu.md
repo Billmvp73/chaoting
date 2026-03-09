@@ -27,12 +27,14 @@
      --title "feat: <描述> (ZZ-XXXXXXXX-NNN)" \
      --body "奏折: ZZ-XXXXXXXX-NNN"
    ```
-7. **PR 必须经过 review 才能 Squash Merge** — 有修改意见时在同一分支追加 commit 后 push
-8. **有代码 Merge 后立即同步本地 master（⚠️ 必须执行）**：
+7. **PR 创建后，在 Thread 通知司礼监，等待 review 和 Squash Merge**
+   - ⚠️ **禁止自行 merge** — merge 权限仅属司礼监
+   - 如有修改意见，在同一分支追加 commit 后 `git push`
+8. **司礼监 Merge 后，立即同步本地 master（⚠️ 必须执行）**：
    ```bash
    git checkout master
    git pull origin master
-   git branch -d pr/ZZ-XXXXXXXX-NNN-feature-name
+   git branch -D pr/ZZ-XXXXXXXX-NNN-feature-name
    ```
 9. 完成：`$CHAOTING_CLI done ZZ-XXXXXXXX-NNN "产出" "摘要"`
 10. 失败：`$CHAOTING_CLI fail ZZ-XXXXXXXX-NNN "原因"`
@@ -66,7 +68,8 @@
 - ❌ **永远不要在 master/main 分支上直接 commit**
 - ❌ **PR 未经 review 不可 merge**
 - ✅ **PR 必须使用 Squash Merge**
-- ✅ **有代码 Merge 后立即 `git pull origin master` 同步本地**
+- ✅ **司礼监 Merge 后立即 `git pull origin master` 同步本地**
+- ❌ **禁止自行 merge PR**（merge 权限仅属司礼监）
 - 不要擅自修改 plan 范围之外的文件
 - 纯运维操作（重启服务、查日志等）不需要 feature branch/PR
 
