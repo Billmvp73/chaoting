@@ -245,6 +245,46 @@ def _send_discord_channel(recipient: str, body: str) -> bool:
         return False
 
 
+def _send_discord_thread(thread_id: str, body: str) -> bool:
+    """Send a message to a Discord Thread.
+
+    Tries in order:
+    1. DISCORD_NOTIFY_WEBHOOK + ?thread_id= query param (standard Discord webhook for threads)
+    2. openclaw CLI thread-reply action
+    """
+    if DISCORD_NOTIFY_WEBHOOK:
+        try:
+            url = f"{DISCORD_NOTIFY_WEBHOOK}?thread_id={thread_id}"
+            payload = json.dumps({"content": body[:2000]}).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return resp.status in (200, 204)
+        except Exception as e:
+            log.warning("Discord thread webhook send failed (thread=%s): %s", thread_id, e)
+            # Fall through to CLI
+
+    # Fallback: openclaw CLI thread-reply
+    try:
+        result = subprocess.run(
+            [OPENCLAW_CLI, "message", "--channel", "discord",
+             "--action", "thread-reply", "--to", thread_id, "-m", body[:2000]],
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            log.warning("Discord thread notify CLI failed (rc=%d): %s",
+                        result.returncode, result.stderr[:200])
+        return result.returncode == 0
+    except Exception as e:
+        log.warning("Discord thread notify CLI exception: %s", e)
+        return False
+
+
 def notify_enqueue(db, zouzhe_id: str, event_type: str, body: str,
                    channel: str = "discord_channel", recipient: str = None,
                    dedup_extra: str = ""):
@@ -253,7 +293,22 @@ def notify_enqueue(db, zouzhe_id: str, event_type: str, body: str,
     Uses INSERT OR IGNORE for deduplication via dedup_key UNIQUE constraint.
     Must be called within an active transaction; caller is responsible for commit.
     Exceptions are caught and logged — never raises.
+
+    If the zouzhe has discord_thread_id set, channel is automatically set to
+    'discord_thread' and recipient to the thread ID (unless explicitly overridden).
     """
+    # Auto-route to Discord Thread if zouzhe has one
+    if channel == "discord_channel" and recipient is None:
+        try:
+            row = db.execute(
+                "SELECT discord_thread_id FROM zouzhe WHERE id = ?", (zouzhe_id,)
+            ).fetchone()
+            if row and row["discord_thread_id"]:
+                channel = "discord_thread"
+                recipient = row["discord_thread_id"]
+        except Exception:
+            pass  # Fall back to channel notification
+
     dedup_key = f"{zouzhe_id}:{event_type}:{channel}:{recipient or 'default'}"
     if dedup_extra:
         dedup_key = f"{dedup_key}:{dedup_extra}"
@@ -270,8 +325,10 @@ def notify_enqueue(db, zouzhe_id: str, event_type: str, body: str,
 
 def notify_worker():
     """Poll tongzhi for pending notifications and send them. Called from main loop."""
+    # Skip only if no Discord config at all; thread notifications use openclaw CLI
     if not DISCORD_NOTIFY_WEBHOOK and not DISCORD_NOTIFY_CHANNEL:
-        return  # Not configured — skip silently
+        # Still process discord_thread notifications (uses openclaw CLI directly)
+        pass
 
     db = get_db()
     try:
@@ -285,6 +342,13 @@ def notify_worker():
             try:
                 if row["channel"] == "discord_channel":
                     success = _send_discord_channel(row["recipient"], row["body"])
+                elif row["channel"] == "discord_thread":
+                    thread_id = row["recipient"]
+                    if thread_id:
+                        success = _send_discord_thread(thread_id, row["body"])
+                    else:
+                        log.warning("discord_thread channel with no recipient for tongzhi#%d", row["id"])
+                        success = False
                 else:
                     log.debug("Unsupported channel %s — skipping tongzhi#%d", row["channel"], row["id"])
                     db.execute(

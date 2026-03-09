@@ -118,6 +118,7 @@ ZOUZHE_NEW_COLUMNS = [
     ("review_agents", "TEXT"),
     ("revise_count", "INTEGER DEFAULT 0"),
     ("plan_history", "TEXT"),
+    ("discord_thread_id", "TEXT"),  # Discord Thread ID for this zouzhe
 ]
 
 

@@ -27,7 +27,7 @@ def out(data, ok=True):
 
 def cmd_new(args):
     if len(args) < 1:
-        out({"ok": False, "error": "usage: chaoting new '<title>' ['<description>'] [--review N] [--priority normal|critical] [--timeout 600]"}, ok=False)
+        out({"ok": False, "error": "usage: chaoting new '<title>' ['<description>'] [--review N] [--priority normal|critical] [--timeout 600] [--thread-id DISCORD_THREAD_ID]"}, ok=False)
 
     title = args[0]
 
@@ -42,6 +42,7 @@ def cmd_new(args):
     review_required = 2  # default: tech + risk review
     priority = "normal"
     timeout_sec = 600
+    discord_thread_id = None
 
     i = idx_start
     while i < len(args):
@@ -59,6 +60,9 @@ def cmd_new(args):
                 timeout_sec = int(args[i + 1])
             except ValueError:
                 out({"ok": False, "error": "--timeout must be an integer"}, ok=False)
+            i += 2
+        elif args[i] == "--thread-id" and i + 1 < len(args):
+            discord_thread_id = args[i + 1]
             i += 2
         else:
             i += 1
@@ -86,14 +90,14 @@ def cmd_new(args):
 
         db.execute(
             "INSERT INTO zouzhe "
-            "(id, title, description, state, priority, timeout_sec, review_required, revise_count) "
-            "VALUES (?, ?, ?, 'created', ?, ?, ?, 0)",
-            (new_id, title, description, priority, timeout_sec, review_required),
+            "(id, title, description, state, priority, timeout_sec, review_required, revise_count, discord_thread_id) "
+            "VALUES (?, ?, ?, 'created', ?, ?, ?, 0, ?)",
+            (new_id, title, description, priority, timeout_sec, review_required, discord_thread_id),
         )
 
         db.execute("COMMIT")
         db.close()
-        out({"ok": True, "id": new_id, "state": "created"})
+        out({"ok": True, "id": new_id, "state": "created", "discord_thread_id": discord_thread_id})
     except Exception as e:
         try:
             db.execute("ROLLBACK")
