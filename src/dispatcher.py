@@ -77,6 +77,7 @@ OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "openclaw")
 
 _audit_loggers: dict = {}           # (zouzhe_id, role) -> logging.Logger
 _audit_lock = threading.Lock()      # Protects _audit_loggers dict
+_audit_logged: set = set()          # (zouzhe_id, event_label) — dedup for CLI-triggered events
 
 
 def _get_audit_logger(zouzhe_id: str, role: str) -> logging.Logger:
@@ -496,14 +497,17 @@ def _check_new_done_failed(db):
         for row in rows:
             body = _format_notification(dict(row), event_type)
             notify_enqueue(db, row["id"], event_type, body)
-            # Audit log for CLI-originated completions
+            # Audit log for CLI-originated completions (dedup guard: avoid repeat on no thread_id)
             _event_label = {"done": "COMPLETE", "failed": "FAIL", "timeout": "TIMEOUT"}.get(target_state, target_state.upper())
-            _remark = row["summary"] if target_state == "done" else row["error"] or ""
-            zouzhe_log(row["id"], row["assigned_agent"] or "dispatcher",
-                       _event_label,
-                       f"state={target_state}",
-                       actor=row["assigned_agent"] or "unknown",
-                       remark=_remark)
+            _audit_key = (row["id"], _event_label)
+            if _audit_key not in _audit_logged:
+                _remark = row["summary"] if target_state == "done" else row["error"] or ""
+                zouzhe_log(row["id"], row["assigned_agent"] or "dispatcher",
+                           _event_label,
+                           f"state={target_state}",
+                           actor=row["assigned_agent"] or "unknown",
+                           remark=_remark)
+                _audit_logged.add(_audit_key)
     db.commit()
 
 
