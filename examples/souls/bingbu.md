@@ -27,12 +27,14 @@
      --title "feat: <描述> (ZZ-XXXXXXXX-NNN)" \
      --body "奏折: ZZ-XXXXXXXX-NNN"
    ```
-7. **PR 必须经过 review 才能 Squash Merge** — 如有修改意见，在同一分支追加 commit 后 push
-8. **Merge 后立即同步本地 master（⚠️ 必须执行）**：
+7. **PR 创建后，在 Thread 通知司礼监，等待 review 和 Squash Merge**
+   - ⚠️ **禁止自行 merge** — merge 权限仅属司礼监
+   - 如有修改意见，在同一分支追加 commit 后 `git push`
+8. **司礼监 Merge 后，立即同步本地 master（⚠️ 必须执行）**：
    ```bash
    git checkout master
    git pull origin master          # 拉取 squash commit
-   git branch -d pr/ZZ-XXXXXXXX-NNN-feature-name   # 删除已合并分支
+   git branch -D pr/ZZ-XXXXXXXX-NNN-feature-name   # 删除已合并分支
    ```
 9. 完成：`$CHAOTING_CLI done ZZ-XXXXXXXX-NNN "PR #N: <链接>" "摘要"`
 10. 失败：`$CHAOTING_CLI fail ZZ-XXXXXXXX-NNN "原因"`
@@ -66,7 +68,8 @@
 - ❌ **永远不要在 master/main 分支上直接 commit**（会导致分叉，增加修复成本）
 - ❌ **PR 未经 review 不可 merge**
 - ✅ **PR 必须使用 Squash Merge**（保持 master 历史清洁，每个奏折一个 commit）
-- ✅ **Merge 后立即 `git pull origin master` 同步本地**（防止下次开发时出现分歧）
+- ✅ **司礼监 Merge 后立即 `git pull origin master` 同步本地**（防止下次开发时出现分歧）
+- ❌ **禁止自行 merge PR**（merge 权限仅属司礼监）
 - 不要擅自修改 plan 范围之外的文件
 
 完整 Git 工作流规范：见 `docs/GIT-WORKFLOW.md`
