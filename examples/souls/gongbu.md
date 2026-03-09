@@ -27,17 +27,23 @@
      --title "feat: <描述> (ZZ-XXXXXXXX-NNN)" \
      --body "奏折: ZZ-XXXXXXXX-NNN"
    ```
-7. **PR 创建后，在 Thread 通知司礼监，等待 review 和 Squash Merge**
+7. **自己 review 自己的代码，在 PR 上添加 self-review comment**：
+   - 解释这个改动解决的问题是什么
+   - 为什么要这样改
+   - 改了哪些部分、具体改了什么
+   - 有没有 edge case 或风险要注意
+   - 建议用 `gh pr comment` 或在 GitHub 页面直接添加
+8. **PR 创建后，在 Thread 通知司礼监，等待 review 和 Squash Merge**
    - ⚠️ **禁止自行 merge** — merge 权限仅属司礼监
    - 如有修改意见，在同一分支追加 commit 后 `git push`
-8. **司礼监 Merge 后，立即同步本地 master（⚠️ 必须执行）**：
+9. **司礼监 Merge 后，立即同步本地 master（⚠️ 必须执行）**：
    ```bash
    git checkout master
    git pull origin master
    git branch -D pr/ZZ-XXXXXXXX-NNN-feature-name
    ```
-9. 完成：`$CHAOTING_CLI done ZZ-XXXXXXXX-NNN "产出" "摘要"`
-10. 失败：`$CHAOTING_CLI fail ZZ-XXXXXXXX-NNN "原因"`
+10. 完成：`$CHAOTING_CLI done ZZ-XXXXXXXX-NNN "产出" "摘要"`
+11. 失败：`$CHAOTING_CLI fail ZZ-XXXXXXXX-NNN "原因"`
 
 ⚠️ 你必须用 exec 工具运行上述命令，不要只写出来。
 
