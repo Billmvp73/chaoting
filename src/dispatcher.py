@@ -529,6 +529,10 @@ def _check_new_done_failed(db):
         for row in rows:
             body = _format_notification(dict(row), event_type)
             notify_enqueue(db, row["id"], event_type, body)
+            # Always insert a state_done/failed/timeout tombstone regardless of discord_thread_id.
+            # notify_enqueue skips insertion when thread_id is absent, leaving the row perpetually
+            # in the query result and causing repeated processing on every restart.
+            _tongzhi_dedup_insert(db, row["id"], event_type)  # e.g. state_done, state_failed
 
             _event_label = {"done": "COMPLETED", "failed": "FAILED", "timeout": "TIMEOUT"}.get(target_state, target_state.upper())
 
@@ -669,6 +673,7 @@ def _tongzhi_dedup_insert(db, zouzhe_id: str, event_type: str):
         log.warning("_tongzhi_dedup_insert failed for %s/%s: %s", zouzhe_id, event_type, e)
 
 
+def format_review_message(zouzhe, jishi_id: str, role_desc: str) -> str:
     """Build the review dispatch message for a 给事中."""
     plan_text = zouzhe["plan"] or "(无方案)"
     try:
