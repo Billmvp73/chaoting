@@ -58,6 +58,13 @@ git commit -m "docs/feat: <描述> (ZZ-XXXXXXXX-NNN)"
 git push origin pr/ZZ-XXXXXXXX-NNN-描述
 gh pr create --title "<类型>: <描述> (ZZ-XXXXXXXX-NNN)" --body "奏折: ZZ-XXXXXXXX-NNN"
 
+# 3.5. 自己 review 自己的代码，在 PR 上添加 self-review comment
+# - 解释这个改动解决的问题是什么
+# - 为什么要这样改
+# - 改了哪些部分、具体改了什么
+# - 有没有 edge case 或风险要注意
+gh pr comment ZZ-XXXXXXXX-NNN --body "## Self-Review\n\n..."
+
 # 4. Squash Merge 后同步（⚠️ 必须立即执行）
 git checkout master && git pull origin master
 git branch -d pr/ZZ-XXXXXXXX-NNN-描述

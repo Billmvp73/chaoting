@@ -513,7 +513,7 @@ def _check_new_done_failed(db):
 
     Idempotent — dedup_key UNIQUE constraint prevents duplicate entries.
     Covers state changes made by CLI commands (cmd_done, cmd_fail) outside dispatcher.
-    Also notifies silijian once per completion (dedup via _audit_logged).
+    Also notifies silijian once per completion (dedup persisted to tongzhi).
     """
     for target_state in ("done", "failed", "timeout"):
         event_type = f"state_{target_state}"
@@ -529,53 +529,77 @@ def _check_new_done_failed(db):
         for row in rows:
             body = _format_notification(dict(row), event_type)
             notify_enqueue(db, row["id"], event_type, body)
-            # Audit log for CLI-originated completions (dedup guard: avoid repeat on no thread_id)
-            _event_label = {"done": "COMPLETED", "failed": "FAILED", "timeout": "TIMEOUT"}.get(target_state, target_state.upper())
-            _audit_key = (row["id"], _event_label)
-            if _audit_key not in _audit_logged:
-                if target_state == "done":
-                    _content = f"OUTPUT:\n{(row['output'] or '(无)')[:1000]}\n\nSUMMARY:\n{row['summary'] or '(无)'}"
-                    _headline = f"✅ 执行完成 — {row['assigned_agent'] or '?'}"
-                else:
-                    _content = f"ERROR:\n{row['error'] or '(无)'}\n\nRETRY: {row['retry_count']}/{row['max_retries']}"
-                    _headline = f"❌ 执行失败/超时 — {row['assigned_agent'] or '?'}"
-                zouzhe_log(row["id"], row["assigned_agent"] or "dispatcher",
-                           _event_label,
-                           _headline,
-                           content=_content,
-                           actor=row["assigned_agent"] or "unknown")
-                _audit_logged.add(_audit_key)
+            # Always insert a state_done/failed/timeout tombstone regardless of discord_thread_id.
+            # notify_enqueue skips insertion when thread_id is absent, leaving the row perpetually
+            # in the query result and causing repeated processing on every restart.
+            _tongzhi_dedup_insert(db, row["id"], event_type)  # e.g. state_done, state_failed
 
-            # Notify silijian once per completion — dedup via _audit_logged
-            _silijian_key = (row["id"], f"SILIJIAN_{_event_label}")
-            if _silijian_key not in _audit_logged:
-                _audit_logged.add(_silijian_key)
-                log.info("Triggering silijian notify for %s/%s", row["id"], target_state)
-                try:
-                    thread_id = row["discord_thread_id"] or "(无 Thread)"
+            _event_label = {"done": "COMPLETED", "failed": "FAILED", "timeout": "TIMEOUT"}.get(target_state, target_state.upper())
+
+            # --- Audit log dedup (DB-persistent) ---
+            _audit_key = (row["id"], _event_label)
+            _audit_dedup_etype = f"audit_log_{_event_label}"
+            if _audit_key not in _audit_logged:
+                # Double-check DB for cross-restart safety
+                existing = db.execute(
+                    "SELECT 1 FROM tongzhi WHERE zouzhe_id=? AND event_type=?",
+                    (row["id"], _audit_dedup_etype),
+                ).fetchone()
+                if not existing:
                     if target_state == "done":
-                        _si_msg = (
-                            f"✅ 奏折已完成\n\n"
-                            f"奏折：{row['id']}\n"
-                            f"标题：{row['title']}\n"
-                            f"执行者：{row['assigned_agent'] or '?'}\n"
-                            f"摘要：{(row['summary'] or '(无)')[:300]}\n"
-                            f"Thread ID：{thread_id}\n\n"
-                            f"请在对应 Thread 中通知皇上任务已完成。"
-                        )
+                        _content = f"OUTPUT:\n{(row['output'] or '(无)')[:1000]}\n\nSUMMARY:\n{row['summary'] or '(无)'}"
+                        _headline = f"✅ 执行完成 — {row['assigned_agent'] or '?'}"
                     else:
-                        _si_msg = (
-                            f"❌ 奏折{'超时' if target_state == 'timeout' else '失败'}\n\n"
-                            f"奏折：{row['id']}\n"
-                            f"标题：{row['title']}\n"
-                            f"执行者：{row['assigned_agent'] or '?'}\n"
-                            f"原因：{(row['error'] or '(未说明)')[:300]}\n"
-                            f"Thread ID：{thread_id}\n\n"
-                            f"请在对应 Thread 中通知皇上并处理。"
-                        )
-                    notify_silijian(dict(row), _si_msg.split("\n\n", 1)[1] if "\n\n" in _si_msg else _si_msg)
-                except Exception as _si_e:
-                    log.warning("notify_silijian failed for %s/%s: %s", row["id"], target_state, _si_e)
+                        _content = f"ERROR:\n{row['error'] or '(无)'}\n\nRETRY: {row['retry_count']}/{row['max_retries']}"
+                        _headline = f"❌ 执行失败/超时 — {row['assigned_agent'] or '?'}"
+                    zouzhe_log(row["id"], row["assigned_agent"] or "dispatcher",
+                               _event_label,
+                               _headline,
+                               content=_content,
+                               actor=row["assigned_agent"] or "unknown")
+                    _tongzhi_dedup_insert(db, row["id"], _audit_dedup_etype)
+                _audit_logged.add(_audit_key)  # hot-cache regardless
+
+            # --- Notify silijian (DB-persistent dedup) ---
+            _silijian_label = f"SILIJIAN_{_event_label}"
+            _silijian_key = (row["id"], _silijian_label)
+            _silijian_dedup_etype = f"silijian_notify_{target_state}"
+            if _silijian_key not in _audit_logged:
+                # Double-check DB for cross-restart safety
+                existing_si = db.execute(
+                    "SELECT 1 FROM tongzhi WHERE zouzhe_id=? AND event_type=?",
+                    (row["id"], _silijian_dedup_etype),
+                ).fetchone()
+                if not existing_si:
+                    log.info("Triggering silijian notify for %s/%s", row["id"], target_state)
+                    try:
+                        thread_id = row["discord_thread_id"] or "(无 Thread)"
+                        if target_state == "done":
+                            _si_msg = (
+                                f"✅ 奏折已完成\n\n"
+                                f"奏折：{row['id']}\n"
+                                f"标题：{row['title']}\n"
+                                f"执行者：{row['assigned_agent'] or '?'}\n"
+                                f"摘要：{(row['summary'] or '(无)')[:300]}\n"
+                                f"Thread ID：{thread_id}\n\n"
+                                f"请在对应 Thread 中通知皇上任务已完成。"
+                            )
+                        else:
+                            _si_msg = (
+                                f"❌ 奏折{'超时' if target_state == 'timeout' else '失败'}\n\n"
+                                f"奏折：{row['id']}\n"
+                                f"标题：{row['title']}\n"
+                                f"执行者：{row['assigned_agent'] or '?'}\n"
+                                f"原因：{(row['error'] or '(未说明)')[:300]}\n"
+                                f"Thread ID：{thread_id}\n\n"
+                                f"请在对应 Thread 中通知皇上并处理。"
+                            )
+                        notify_silijian(dict(row), _si_msg.split("\n\n", 1)[1] if "\n\n" in _si_msg else _si_msg)
+                        # Persist dedup tombstone only after successful call
+                        _tongzhi_dedup_insert(db, row["id"], _silijian_dedup_etype)
+                    except Exception as _si_e:
+                        log.warning("notify_silijian failed for %s/%s: %s", row["id"], target_state, _si_e)
+                _audit_logged.add(_silijian_key)  # hot-cache regardless
     db.commit()
 
 
@@ -597,6 +621,56 @@ def notify_silijian(zouzhe, message: str):
             log.info("notify_silijian sent for %s", zouzhe['id'])
     except Exception as e:
         log.error("Failed to notify silijian for %s: %s", zouzhe["id"], e)
+
+
+def _preload_audit_logged():
+    """Pre-populate _audit_logged from tongzhi at startup to prevent post-restart duplicates.
+
+    Loads all dedup_keys with event_type starting with 'silijian_notify' or 'audit_log'
+    into the in-memory _audit_logged set, so that done/failed zouzhe already processed
+    are not re-notified or re-logged on restart.
+    """
+    global _audit_logged
+    try:
+        db = get_db()
+        rows = db.execute(
+            "SELECT zouzhe_id, event_type FROM tongzhi "
+            "WHERE event_type LIKE 'silijian_notify_%' OR event_type LIKE 'audit_log_%'"
+        ).fetchall()
+        db.close()
+        for row in rows:
+            zid = row["zouzhe_id"]
+            etype = row["event_type"]
+            if etype.startswith("silijian_notify_"):
+                # e.g. silijian_notify_done → key = (zid, "SILIJIAN_COMPLETED")
+                state = etype[len("silijian_notify_"):]
+                label = {"done": "COMPLETED", "failed": "FAILED", "timeout": "TIMEOUT"}.get(state, state.upper())
+                _audit_logged.add((zid, f"SILIJIAN_{label}"))
+            elif etype.startswith("audit_log_"):
+                # e.g. audit_log_COMPLETED → key = (zid, "COMPLETED")
+                label = etype[len("audit_log_"):]
+                _audit_logged.add((zid, label))
+        log.info("Preloaded %d dedup keys into _audit_logged from tongzhi", len(rows))
+    except Exception as e:
+        log.warning("_preload_audit_logged failed: %s", e)
+
+
+def _tongzhi_dedup_insert(db, zouzhe_id: str, event_type: str):
+    """Insert a dedup tombstone into tongzhi (no channel, no body) for persistence.
+
+    Uses INSERT OR IGNORE — safe to call multiple times.
+    event_type examples: 'silijian_notify_done', 'audit_log_COMPLETED'
+    """
+    dedup_key = f"{zouzhe_id}:{event_type}:dedup"
+    try:
+        db.execute(
+            "INSERT OR IGNORE INTO tongzhi "
+            "(zouzhe_id, event_type, channel, recipient, body, state, dedup_key) "
+            "VALUES (?, ?, 'internal', 'dedup', '', 'sent', ?)",
+            (zouzhe_id, event_type, dedup_key),
+        )
+    except Exception as e:
+        log.warning("_tongzhi_dedup_insert failed for %s/%s: %s", zouzhe_id, event_type, e)
 
 
 def format_review_message(zouzhe, jishi_id: str, role_desc: str) -> str:
@@ -1158,6 +1232,7 @@ def main():
         return
 
     recover_orphans()
+    _preload_audit_logged()   # Pre-fill _audit_logged from DB to prevent post-restart duplicates
 
     last_timeout_check = 0.0
     last_archive_check = 0.0
