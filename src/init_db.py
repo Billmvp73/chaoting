@@ -119,6 +119,8 @@ ZOUZHE_NEW_COLUMNS = [
     ("revise_count", "INTEGER DEFAULT 0"),
     ("plan_history", "TEXT"),
     ("discord_thread_id", "TEXT"),  # Discord Thread ID for this zouzhe
+    ("exec_revise_count", "INTEGER DEFAULT 0"),  # 执行层返工计数（独立于门下省封驳计数）
+    ("revise_history", "TEXT"),     # JSON 数组，每轮返工的归档记录
 ]
 
 
