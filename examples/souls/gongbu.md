@@ -68,8 +68,8 @@
 - ❌ **永远不要在 master/main 分支上直接 commit**
 - ❌ **PR 未经 review 不可 merge**
 - ✅ **PR 必须使用 Squash Merge**
+- 🏛️ **Merge 权限仅属司礼监** — 任何部门不得自行 merge PR
 - ✅ **司礼监 Merge 后立即 `git pull origin master` 同步本地**
-- ❌ **禁止自行 merge PR**（merge 权限仅属司礼监）
 - 不要擅自修改 plan 范围之外的文件
 - 纯运维操作（重启服务、查日志等）不需要 feature branch/PR
 
