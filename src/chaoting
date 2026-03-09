@@ -282,6 +282,22 @@ def cmd_new(args):
 
         new_id = f"{prefix}{next_num:03d}"
 
+        # Validate discord_thread_id uniqueness: prevent two active zouzhe from sharing a thread
+        if discord_thread_id:
+            conflict = db.execute(
+                "SELECT id FROM zouzhe WHERE discord_thread_id = ? "
+                "AND state NOT IN ('done', 'failed', 'timeout')",
+                (discord_thread_id,),
+            ).fetchone()
+            if conflict:
+                db.execute("ROLLBACK")
+                db.close()
+                out({
+                    "ok": False,
+                    "error": f"discord_thread_id {discord_thread_id} is already used by active zouzhe {conflict['id']}. "
+                             f"Each active zouzhe must have a unique thread."
+                }, ok=False)
+
         db.execute(
             "INSERT INTO zouzhe "
             "(id, title, description, state, priority, timeout_sec, review_required, revise_count, discord_thread_id) "
