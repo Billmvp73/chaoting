@@ -228,6 +228,24 @@ def cmd_new(args):
 
         db.execute("COMMIT")
         db.close()
+
+        # Audit log: record creation in caller's log file
+        caller = os.environ.get("OPENCLAW_AGENT_ID", "silijian")
+        zouzhe_log(new_id, caller, "CREATED",
+                   f"奏折已创建：{title}",
+                   priority=priority,
+                   review_required=review_required,
+                   timeout_sec=timeout_sec)
+
+        # Thread notification if thread_id provided at creation
+        if discord_thread_id:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _send_thread_notify(
+                discord_thread_id,
+                f"🏛️ **奏折已创建**\n\n奏折：{new_id}\n标题：{title}\n优先级：{priority}\n"
+                f"审核级别：{review_required}\n创建时间：{ts}\n\n等待中书省规划方案……",
+            )
+
         out({"ok": True, "id": new_id, "state": "created", "discord_thread_id": discord_thread_id})
     except Exception as e:
         try:
