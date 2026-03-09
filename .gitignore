@@ -15,3 +15,6 @@ __pycache__/
 TEST-*.txt
 CHANGELOG-0*.md
 openclaw-agents-fragment.json
+
+# Log
+logs/*
