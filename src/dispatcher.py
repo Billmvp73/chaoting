@@ -9,7 +9,7 @@ import subprocess
 import threading
 import time
 
-CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.abspath(__file__)))
+CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
 CHAOTING_CLI = os.path.join(CHAOTING_DIR, "src", "chaoting") if os.path.isfile(os.path.join(CHAOTING_DIR, "src", "chaoting")) else os.path.join(CHAOTING_DIR, "chaoting")
 
