@@ -357,7 +357,7 @@ def _check_new_done_failed(db):
                 error = (row["error"] or "(未说明)")[:300]
                 msg = f"❌ 奏折{kind}\n\n奏折：{zid}\n标题：{title}\n执行者：{agent}\n原因：{error}"
             try:
-                notify_silijian(dict(row), msg)
+                _cli_notify(zid, msg)
                 db.execute(
                     "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
                     "VALUES (?, 'dispatcher', 'silijian', 'silijian_notify', ?)",
@@ -365,7 +365,7 @@ def _check_new_done_failed(db):
                 )
                 db.commit()
             except Exception as e:
-                log.warning('notify_silijian failed for %s/%s: %s', row['id'], target_state, e)
+                log.warning('_cli_notify failed for %s/%s: %s', row['id'], target_state, e)
 
 
 
@@ -558,7 +558,6 @@ def check_votes(db, zouzhe):
                        "reviewing -> failed",
                        actor="menxia", remark="三驳失败，呈御前裁决")
             log.warning("三驳失败 %s，呈御前裁决", zouzhe["id"])
-            notify_silijian(dict(zouzhe), "奏折已被封驳3次，请人工决断")
             _cli_notify(zouzhe["id"], f"⛔ 三驳失败\n\n📜 `{zouzhe['id']}` — {zouzhe['title']}\n🏛️ 需要人工决断")
         else:
             # Archive old plan + votes, enter revising
@@ -642,7 +641,6 @@ def handle_review_timeout(db, zouzhe):
         )
         db.commit()
         log.warning("军国大事审核超时 %s，标记失败", zouzhe["id"])
-        notify_silijian(dict(zouzhe), f"军国大事审核超时，{len(missing)} 名给事中未投票")
         _cli_notify(zouzhe["id"], f"⏰ 审核超时\n\n📜 `{zouzhe['id']}` — {zouzhe['title']}\n👥 军国大事超时，{len(missing)} 名给事中未投票")
     else:
         # Normal: auto-insert go votes for missing, notify silijian
@@ -659,7 +657,6 @@ def handle_review_timeout(db, zouzhe):
         )
         db.commit()
         log.info("审核超时 %s，%d 名给事中默认准奏", zouzhe["id"], len(missing))
-        notify_silijian(dict(zouzhe), f"审核超时，{len(missing)} 名给事中默认准奏")
         _cli_notify(zouzhe["id"], f"⏰ 审核超时\n\n📜 `{zouzhe['id']}` — {zouzhe['title']}\n👥 {len(missing)} 名给事中默认准奏")
         # Next poll cycle check_votes will see all votes complete
 
