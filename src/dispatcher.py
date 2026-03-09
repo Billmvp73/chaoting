@@ -331,8 +331,10 @@ def _cli_notify(zouzhe_id: str, body: str):
 def _check_new_done_failed(db):
     """Notify silijian about newly done/failed/timeout zouzhe.
 
-    Uses liuzhuan to dedup: if a 'silijian_notify' action already exists for this
-    zouzhe, skip it. CLI handles Discord notifications directly.
+    Uses liuzhuan to dedup via INSERT OR IGNORE: a UNIQUE INDEX on
+    (zouzhe_id, action, remark) prevents duplicate entries even across
+    concurrent dispatchers or restarts.
+    CLI handles Discord notifications directly.
     """
     for target_state in ('done', 'failed', 'timeout'):
         rows = db.execute(
@@ -357,15 +359,20 @@ def _check_new_done_failed(db):
                 error = (row["error"] or "(未说明)")[:300]
                 msg = f"❌ 奏折{kind}\n\n奏折：{zid}\n标题：{title}\n执行者：{agent}\n原因：{error}"
             try:
-                _cli_notify(zid, msg)
-                db.execute(
-                    "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+                # INSERT OR IGNORE: safe against duplicate rows even under concurrent dispatchers
+                result = db.execute(
+                    "INSERT OR IGNORE INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
                     "VALUES (?, 'dispatcher', 'silijian', 'silijian_notify', ?)",
                     (row['id'], target_state),
                 )
                 db.commit()
+                # Only send notification if this INSERT actually created a new row
+                if result.rowcount > 0:
+                    _cli_notify(zid, msg)
+                else:
+                    log.debug("_check_new_done_failed: dedup skip for %s/%s", zid, target_state)
             except Exception as e:
-                log.warning('_cli_notify failed for %s/%s: %s', row['id'], target_state, e)
+                log.warning('_check_new_done_failed failed for %s/%s: %s', row['id'], target_state, e)
 
 
 
