@@ -78,6 +78,10 @@ def get_review_agents(zouzhe):
 
 OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "openclaw")
 
+# Fallback channel when no discord_thread_id is set on a zouzhe.
+# Notifications without a thread route here instead of being silently dropped.
+DISCORD_FALLBACK_CHANNEL_ID = os.environ.get("DISCORD_FALLBACK_CHANNEL_ID", "1475384414585487463")
+
 
 # ──────────────────────────────────────────────────────
 # 审计日志系统 — 结构化奏折生命周期追踪
@@ -398,6 +402,30 @@ def _send_discord_thread(thread_id: str, body: str) -> bool:
         return False
 
 
+def _send_discord_channel(channel_id: str, body: str) -> bool:
+    """Send a message to a Discord channel (non-thread) via openclaw CLI.
+
+    Used as fallback when a zouzhe has no discord_thread_id.
+    Syntax: themachine message send --channel discord --target CHANNEL_ID --message MSG
+    """
+    try:
+        result = subprocess.run(
+            [OPENCLAW_CLI, "message", "send",
+             "--channel", "discord",
+             "--target", channel_id,
+             "--message", body[:2000]],
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            log.warning("Discord channel notify failed (rc=%d, channel=%s): %s",
+                        result.returncode, channel_id, result.stderr[:200])
+        return result.returncode == 0
+    except Exception as e:
+        log.warning("Discord channel notify exception (channel=%s): %s", channel_id, e)
+        return False
+
+
 def notify_enqueue(db, zouzhe_id: str, event_type: str, body: str,
                    channel: str = "discord_thread", recipient: str = None,
                    dedup_extra: str = ""):
@@ -408,8 +436,8 @@ def notify_enqueue(db, zouzhe_id: str, event_type: str, body: str,
     Exceptions are caught and logged — never raises.
 
     recipient is the Discord Thread ID. If not provided, looks up discord_thread_id
-    from the zouzhe record. Notifications without a thread_id are silently skipped
-    (no entry written to tongzhi).
+    from the zouzhe record. When no thread_id exists, falls back to the main
+    #edict channel (DISCORD_FALLBACK_CHANNEL_ID) with channel='discord_channel'.
     """
     # Resolve thread_id from zouzhe if not explicitly provided
     if recipient is None:
@@ -422,10 +450,16 @@ def notify_enqueue(db, zouzhe_id: str, event_type: str, body: str,
         except Exception:
             pass
 
-    # No thread_id — silently skip, no tongzhi entry
+    # No thread_id — fall back to main #edict channel instead of silently dropping
     if not recipient:
-        log.debug("notify_enqueue: no discord_thread_id for %s/%s — skipping", zouzhe_id, event_type)
-        return
+        if DISCORD_FALLBACK_CHANNEL_ID:
+            recipient = DISCORD_FALLBACK_CHANNEL_ID
+            channel = "discord_channel"
+            log.debug("notify_enqueue: no thread_id for %s/%s — falling back to channel %s",
+                      zouzhe_id, event_type, recipient)
+        else:
+            log.debug("notify_enqueue: no discord_thread_id for %s/%s — skipping", zouzhe_id, event_type)
+            return
 
     dedup_key = f"{zouzhe_id}:{event_type}:{channel}:{recipient or 'default'}"
     if dedup_extra:
@@ -457,10 +491,11 @@ def notify_worker():
         for row in rows:
             success = False
             try:
-                thread_id = row["recipient"]
-                if not thread_id:
-                    # No thread_id — mark skipped, not an error
-                    log.debug("No thread_id for tongzhi#%d — skipping", row["id"])
+                recipient = row["recipient"]
+                ch = row["channel"] or "discord_thread"
+                if not recipient:
+                    # No recipient — mark skipped, not an error
+                    log.debug("No recipient for tongzhi#%d — skipping", row["id"])
                     db.execute(
                         "UPDATE tongzhi SET state='skipped', "
                         "updated_at=strftime('%Y-%m-%dT%H:%M:%S','now') WHERE id=?",
@@ -468,7 +503,14 @@ def notify_worker():
                     )
                     db.commit()
                     continue
-                success = _send_discord_thread(thread_id, row["body"])
+                if ch == "discord_channel":
+                    success = _send_discord_channel(recipient, row["body"])
+                elif ch == "internal":
+                    # dedup tombstone — mark sent immediately, no actual send
+                    success = True
+                else:
+                    # default: discord_thread
+                    success = _send_discord_thread(recipient, row["body"])
             except Exception as e:
                 log.warning("notify_worker send error for tongzhi#%d: %s", row["id"], e)
 
