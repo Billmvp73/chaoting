@@ -68,6 +68,51 @@ def _fmt_fail_thread(zid: str, agent: str, reason: str) -> str:
         f"请在此 Thread 中讨论处理方案。"
     )
 
+
+def _fmt_plan_thread(zid: str, target_agent: str, next_state: str) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if next_state == "reviewing":
+        action = "计划已提交，进入门下省审核"
+        detail = f"执行部门：{target_agent}\n下一状态：reviewing（等待给事中投票）"
+    else:
+        action = "计划已提交，直接进入执行（免审）"
+        detail = f"执行部门：{target_agent}\n下一状态：executing"
+    return (
+        f"📋 **中书省完成规划**\n\n"
+        f"奏折：{zid}\n"
+        f"提交时间：{ts}\n\n"
+        f"{action}\n{detail}"
+    )
+
+
+def _fmt_vote_thread(zid: str, jishi_id: str, vote: str, reason: str, round_num: int) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    symbol = "✅ GO（准奏）" if vote == "go" else "❌ NOGO（封驳）"
+    reason_line = f"\n\n【理由】\n{reason}" if reason else ""
+    return (
+        f"🗳 **给事中投票**\n\n"
+        f"奏折：{zid}\n"
+        f"给事中：{jishi_id}\n"
+        f"投票：{symbol}\n"
+        f"轮次：第 {round_num} 轮\n"
+        f"时间：{ts}"
+        f"{reason_line}"
+    )
+
+
+def _fmt_revise_thread(zid: str, caller: str, reason: str, count: int, target_state: str) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    target_label = "重新规划（revising）" if target_state == "revising" else "重新执行（executing）"
+    return (
+        f"🔄 **奏折退回返工**\n\n"
+        f"奏折：{zid}\n"
+        f"发起者：{caller}\n"
+        f"第 {count} 次返工\n"
+        f"目标状态：{target_label}\n"
+        f"时间：{ts}\n\n"
+        f"【返工原因】\n{reason}"
+    )
+
 def out(data, ok=True):
     code = 0 if ok else 1
     print(json.dumps(data, ensure_ascii=False))
@@ -400,6 +445,19 @@ def cmd_revise(args):
                    actor=caller,
                    reason=reason,
                    revise_count=new_count)
+        # Push revise notification to Thread
+        thread_id = row["discord_thread_id"] if row else None
+        if not thread_id:
+            # row from RETURNING doesn't have discord_thread_id — fetch separately
+            _db2 = get_db()
+            _r = _db2.execute("SELECT discord_thread_id FROM zouzhe WHERE id = ?", (zid,)).fetchone()
+            thread_id = _r["discord_thread_id"] if _r else None
+            _db2.close()
+        if thread_id:
+            _send_thread_notify(
+                thread_id,
+                _fmt_revise_thread(zid, caller, reason, new_count, target_state),
+            )
         out({
             "ok": True,
             "zouzhe_id": zid,
@@ -487,12 +545,14 @@ def cmd_plan(args):
 
     # Check if review is required
     zouzhe = db.execute(
-        "SELECT id, review_required FROM zouzhe WHERE id = ? AND state = 'planning'",
+        "SELECT id, review_required, discord_thread_id FROM zouzhe WHERE id = ? AND state = 'planning'",
         (zid,),
     ).fetchone()
     if not zouzhe:
         db.close()
         out({"ok": False, "error": "state conflict — zouzhe not in planning state"}, ok=False)
+
+    thread_id = zouzhe["discord_thread_id"]
 
     if zouzhe["review_required"]:
         # Enter reviewing state — dispatcher will dispatch to 给事中
@@ -518,6 +578,8 @@ def cmd_plan(args):
                    "计划已提交门下省审核",
                    target_agent=target_agent,
                    next_state="reviewing")
+        if thread_id:
+            _send_thread_notify(thread_id, _fmt_plan_thread(zid, target_agent, "reviewing"))
         out({"ok": True, "zouzhe_id": zid, "state": "reviewing", "target_agent": target_agent})
     else:
         # Skip review — go directly to executing
@@ -543,6 +605,8 @@ def cmd_plan(args):
                    "计划已提交，直接进入执行（免审）",
                    target_agent=target_agent,
                    next_state="executing")
+        if thread_id:
+            _send_thread_notify(thread_id, _fmt_plan_thread(zid, target_agent, "executing"))
         out({"ok": True, "zouzhe_id": zid, "state": "executing", "target_agent": target_agent})
 
 
@@ -721,7 +785,7 @@ def cmd_vote(args):
         db.execute("BEGIN IMMEDIATE")
 
         zouzhe = db.execute(
-            "SELECT id, revise_count FROM zouzhe WHERE id = ? AND state = 'reviewing'",
+            "SELECT id, revise_count, discord_thread_id FROM zouzhe WHERE id = ? AND state = 'reviewing'",
             (zid,),
         ).fetchone()
 
@@ -744,12 +808,18 @@ def cmd_vote(args):
             out({"ok": False, "error": "already voted this round"}, ok=False)
 
         db.execute("COMMIT")
+        thread_id = zouzhe["discord_thread_id"]
         db.close()
         zouzhe_log(zid, jishi_id, "VOTE",
                    vote.upper(),
                    jishi=jishi_id,
                    round=current_round,
                    reason=reason)
+        if thread_id:
+            _send_thread_notify(
+                thread_id,
+                _fmt_vote_thread(zid, jishi_id, vote, reason, current_round),
+            )
         out({"ok": True, "action": "vote", "zouzhe_id": zid, "vote": vote,
              "jishi_id": jishi_id, "round": current_round})
     except Exception as e:
