@@ -79,6 +79,8 @@ _audit_loggers: dict = {}           # (zouzhe_id, role) -> logging.Logger
 _audit_lock = threading.Lock()      # Protects _audit_loggers dict
 _audit_logged: set = set()          # (zouzhe_id, event_label) — dedup for CLI-triggered events
 
+LOG_SEPARATOR = "━" * 42            # Visual block separator in log files
+
 
 def _get_audit_logger(zouzhe_id: str, role: str) -> logging.Logger:
     """Get or create a RotatingFileHandler-backed logger for (zouzhe_id, role)."""
@@ -109,25 +111,84 @@ def _get_audit_logger(zouzhe_id: str, role: str) -> logging.Logger:
         return _audit_loggers[key]
 
 
-def zouzhe_log(zouzhe_id: str, role: str, event_type: str, message: str, **kwargs):
-    """Append one structured event line to logs/{zouzhe_id}/{role}.log.
+def zouzhe_log(zouzhe_id: str, role: str, event_type: str, headline: str,
+               content: str = "", **kwargs):
+    """Write a rich structured log block to logs/{zouzhe_id}/{role}.log.
 
-    Format: [YYYY-MM-DD HH:MM:SS] EVENT_TYPE: message | KEY: value ...
+    Block format:
+        [YYYY-MM-DD HH:MM:SS] ▶ EVENT_TYPE
+        headline
+
+        KEY: value
+        ...
+
+        content (multi-line, optional)
+
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     Uses RotatingFileHandler (10 MB / backupCount=3).
     Wrapped in try/except — never raises, never blocks main flow.
     """
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        parts = [f"[{timestamp}] {event_type}: {message}"]
-        for k, v in kwargs.items():
-            if v is not None and v != "":
-                parts.append(f"| {k.upper()}: {v}")
-        line = " ".join(parts)
+        lines = [f"\n[{timestamp}] ▶ {event_type}", headline]
+
+        kv_lines = [f"{k.upper()}: {v}" for k, v in kwargs.items() if v is not None and v != ""]
+        if kv_lines:
+            lines.append("")
+            lines.extend(kv_lines)
+
+        if content:
+            lines.append("")
+            lines.append(content)
+
+        lines.append("")
+        lines.append(LOG_SEPARATOR)
+
+        block = "\n".join(lines)
         logger = _get_audit_logger(zouzhe_id, role)
-        logger.info(line)
+        logger.info(block)
     except Exception as e:
         log.warning("zouzhe_log failed for %s/%s/%s: %s", zouzhe_id, role, event_type, e)
+
+
+def _format_plan_content(plan_json_str: str) -> str:
+    """Format plan JSON into human-readable multi-line text for log blocks."""
+    if not plan_json_str:
+        return "(无方案)"
+    try:
+        plan = json.loads(plan_json_str)
+        lines = []
+        if plan.get("target_agent"):
+            lines.append(f"TARGET_AGENT: {plan['target_agent']}")
+        if plan.get("repo_path"):
+            lines.append(f"REPO_PATH: {plan['repo_path']}")
+        if plan.get("target_files"):
+            tf = plan["target_files"]
+            lines.append(f"TARGET_FILES: {', '.join(tf) if isinstance(tf, list) else tf}")
+        if plan.get("steps"):
+            lines.append("\n【步骤】")
+            for i, step in enumerate(plan["steps"], 1):
+                lines.append(f"{i}. {step}")
+        if plan.get("acceptance_criteria"):
+            lines.append(f"\n【验收标准】\n{plan['acceptance_criteria']}")
+        return "\n".join(lines) if lines else json.dumps(plan, ensure_ascii=False, indent=2)
+    except Exception:
+        return str(plan_json_str)[:2000]
+
+
+def _format_votes_content(votes) -> str:
+    """Format toupiao rows into human-readable vote summary."""
+    lines = []
+    for v in votes:
+        jishi = v["jishi_id"] if hasattr(v, "__getitem__") else v.get("jishi_id", "?")
+        vote_val = v["vote"] if hasattr(v, "__getitem__") else v.get("vote", "?")
+        reason = (v["reason"] if hasattr(v, "__getitem__") else v.get("reason", "")) or ""
+        symbol = "✅ GO" if vote_val == "go" else "❌ NOGO"
+        lines.append(f"• {jishi}: {symbol}")
+        if reason:
+            lines.append(f"  REASON: {reason}")
+    return "\n".join(lines)
 
 
 def _enforce_logs_limit(max_bytes: int = 500 * 1024 * 1024):
@@ -498,15 +559,20 @@ def _check_new_done_failed(db):
             body = _format_notification(dict(row), event_type)
             notify_enqueue(db, row["id"], event_type, body)
             # Audit log for CLI-originated completions (dedup guard: avoid repeat on no thread_id)
-            _event_label = {"done": "COMPLETE", "failed": "FAIL", "timeout": "TIMEOUT"}.get(target_state, target_state.upper())
+            _event_label = {"done": "COMPLETED", "failed": "FAILED", "timeout": "TIMEOUT"}.get(target_state, target_state.upper())
             _audit_key = (row["id"], _event_label)
             if _audit_key not in _audit_logged:
-                _remark = row["summary"] if target_state == "done" else row["error"] or ""
+                if target_state == "done":
+                    _content = f"OUTPUT:\n{(row['output'] or '(无)')[:1000]}\n\nSUMMARY:\n{row['summary'] or '(无)'}"
+                    _headline = f"✅ 执行完成 — {row['assigned_agent'] or '?'}"
+                else:
+                    _content = f"ERROR:\n{row['error'] or '(无)'}\n\nRETRY: {row['retry_count']}/{row['max_retries']}"
+                    _headline = f"❌ 执行失败/超时 — {row['assigned_agent'] or '?'}"
                 zouzhe_log(row["id"], row["assigned_agent"] or "dispatcher",
                            _event_label,
-                           f"state={target_state}",
-                           actor=row["assigned_agent"] or "unknown",
-                           remark=_remark)
+                           _headline,
+                           content=_content,
+                           actor=row["assigned_agent"] or "unknown")
                 _audit_logged.add(_audit_key)
     db.commit()
 
@@ -618,12 +684,21 @@ def dispatch_reviewers(db, zouzhe):
             (zouzhe["id"], actual_agent, f"reviewing dispatch to {jishi_id}"),
         )
         zouzhe_log(zouzhe["id"], "menxia", "DISPATCH",
-                   f"dispatcher -> {actual_agent}",
+                   f"📤 dispatcher -> {actual_agent}",
                    actor="dispatcher", remark=f"reviewing dispatch to {jishi_id}")
         dispatch_agent(actual_agent, zouzhe["id"], zouzhe["timeout_sec"], msg=msg)
 
     db.commit()
     log.info("Dispatched reviewers for %s: %s", zouzhe["id"], jishi_list)
+    _revise_count = zouzhe["revise_count"] or 0
+    if _revise_count == 0:
+        _event = "PLAN_GENERATED"
+        _headline = "📋 中书省方案已提交，转交门下省审核"
+    else:
+        _event = "PLAN_REVISED"
+        _headline = f"📋 修改后方案（第 {_revise_count} 轮），转交门下省审核"
+    zouzhe_log(zouzhe["id"], "zhongshu", _event, _headline,
+               content=_format_plan_content(zouzhe["plan"]))
 
 
 def _notify_state_change(zouzhe_id: str, event_type: str, extra: str = ""):
@@ -678,6 +753,10 @@ def check_votes(db, zouzhe):
             zouzhe_log(zouzhe["id"], v["jishi_id"], "VOTE",
                        v["vote"].upper(),
                        jishi=v["jishi_id"], reason=v.get("reason", ""))
+        # Rich APPROVED block in menxia.log
+        zouzhe_log(zouzhe["id"], "menxia", "APPROVED",
+                   "✅ 门下省准奏，全票通过",
+                   content=_format_votes_content(votes))
         zouzhe_log(zouzhe["id"], "menxia", "STATE",
                    "reviewing -> executing",
                    actor="menxia", remark="门下省准奏，全票通过")
@@ -703,11 +782,14 @@ def check_votes(db, zouzhe):
                 (zouzhe["id"],),
             )
             db.commit()
-            # Log nogo votes
+            # Log nogo votes + REJECTED block
             for v in votes:
                 zouzhe_log(zouzhe["id"], v["jishi_id"], "VOTE",
                            v["vote"].upper(),
                            jishi=v["jishi_id"], reason=v.get("reason", ""))
+            zouzhe_log(zouzhe["id"], "menxia", "REJECTED",
+                       "⛔ 三驳失败，呈御前裁决",
+                       content=_format_votes_content(votes))
             zouzhe_log(zouzhe["id"], "menxia", "STATE",
                        "reviewing -> failed",
                        actor="menxia", remark="三驳失败，呈御前裁决")
@@ -752,6 +834,12 @@ def check_votes(db, zouzhe):
                 zouzhe_log(zouzhe["id"], v["jishi_id"], "VOTE",
                            v["vote"].upper(),
                            jishi=v["jishi_id"], reason=v.get("reason", ""))
+            # Rich PLAN_REVISE_FEEDBACK block in zhongshu.log
+            zouzhe_log(zouzhe["id"], "zhongshu", "PLAN_REVISE_FEEDBACK",
+                       f"📥 收到门下省封驳意见（第 {current_round} 轮），计划需调整",
+                       content=f"FEEDBACK_ROUND: {current_round}\n\n"
+                               f"【投票详情】\n{_format_votes_content(votes)}\n\n"
+                               f"ACTION: 修改计划后重新提交审核")
             zouzhe_log(zouzhe["id"], "menxia", "REVISE",
                        f"Plan archived to round {current_round}, entering revising",
                        actor="menxia", remark=f"封驳（第{current_round}次），退回中书省")
@@ -841,6 +929,16 @@ def poll_and_dispatch():
                         (row["id"], agent_role, f"{current_state} -> {next_state}"),
                     )
                     db.commit()
+                    # Rich RECEIVED log for zhongshu (first time) or revising feedback loop
+                    if current_state == "created":
+                        _desc = (row["description"] or "")[:600]
+                        zouzhe_log(row["id"], "zhongshu", "RECEIVED",
+                                   "📬 从 dispatcher 收到新奏折",
+                                   content=f"ZOUZHE_ID: {row['id']}\n"
+                                           f"TITLE: {row['title']}\n"
+                                           f"PRIORITY: {row['priority']}\n"
+                                           f"TIMEOUT: {row['timeout_sec']}s\n\n"
+                                           f"【描述】\n{_desc}")
                     zouzhe_log(row["id"], "dispatcher", "STATE",
                                f"{current_state} -> {next_state}",
                                actor="dispatcher", remark=f"dispatched to {agent_role}")
@@ -873,7 +971,9 @@ def poll_and_dispatch():
                 )
                 db.commit()
                 zouzhe_log(row["id"], "dispatcher", "DISPATCH",
-                           f"dispatcher -> {row['assigned_agent']}",
+                           f"📤 派发给 {row['assigned_agent']} 执行",
+                           content=f"TARGET_AGENT: {row['assigned_agent']}\n"
+                                   f"TIMEOUT: {row['timeout_sec']}s",
                            actor="dispatcher", remark="executing -> agent dispatch")
                 dispatch_agent(row["assigned_agent"], row["id"], row["timeout_sec"])
 
@@ -942,9 +1042,11 @@ def check_timeouts():
                 )
                 db.commit()
                 zouzhe_log(zid, "dispatcher", "TIMEOUT",
-                           f"max retries ({row['max_retries']}) exhausted",
-                           actor="dispatcher",
-                           remark=f"state={row['state']}, timeout_sec={row['timeout_sec']}")
+                           f"⏰ 超时，重试次数耗尽 — {row['assigned_agent'] or '?'}",
+                           content=f"STATE: {row['state']}\n"
+                                   f"TIMEOUT_SEC: {row['timeout_sec']}\n"
+                                   f"RETRIES: {row['max_retries']}/{row['max_retries']} exhausted",
+                           actor="dispatcher")
                 log.warning("Timeout %s — max retries exhausted", zid)
                 # 通知：执行超时
                 _notify_state_change(zid, "state_timeout")
