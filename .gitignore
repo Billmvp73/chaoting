@@ -18,3 +18,9 @@ openclaw-agents-fragment.json
 
 # Log
 logs/*
+
+# Personal config
+.env
+
+.claude
+CLAUDE.md

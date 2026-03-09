@@ -16,6 +16,18 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
 CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Load .env from project root (does not override existing env vars)
+_dotenv_path = os.path.join(CHAOTING_DIR, ".env")
+if os.path.isfile(_dotenv_path):
+    with open(_dotenv_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                if _k.strip() not in os.environ:
+                    os.environ[_k.strip()] = _v.strip()
+
 DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
 CHAOTING_CLI = os.path.join(CHAOTING_DIR, "src", "chaoting") if os.path.isfile(os.path.join(CHAOTING_DIR, "src", "chaoting")) else os.path.join(CHAOTING_DIR, "chaoting")
 
@@ -76,7 +88,7 @@ def get_review_agents(zouzhe):
     level = zouzhe["review_required"] if zouzhe["review_required"] else 0
     return REVIEW_LEVEL_MAP.get(level, DEFAULT_REVIEW_AGENTS)
 
-OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "openclaw")
+OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "themachine")
 
 # Fallback channel when no discord_thread_id is set on a zouzhe.
 # Must be configured via DISCORD_FALLBACK_CHANNEL_ID environment variable in the service file.

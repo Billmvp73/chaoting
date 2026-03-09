@@ -9,6 +9,18 @@ import sys
 from datetime import datetime, timezone
 
 CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Load .env from project root (does not override existing env vars)
+_dotenv_path = os.path.join(CHAOTING_DIR, ".env")
+if os.path.isfile(_dotenv_path):
+    with open(_dotenv_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                if _k.strip() not in os.environ:
+                    os.environ[_k.strip()] = _v.strip()
+
 DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
 OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "themachine")
 
