@@ -79,8 +79,9 @@ def get_review_agents(zouzhe):
 OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "openclaw")
 
 # Fallback channel when no discord_thread_id is set on a zouzhe.
-# Notifications without a thread route here instead of being silently dropped.
-DISCORD_FALLBACK_CHANNEL_ID = os.environ.get("DISCORD_FALLBACK_CHANNEL_ID", "1479959995520127160")
+# Must be configured via DISCORD_FALLBACK_CHANNEL_ID environment variable in the service file.
+# If not set, notifications for zouzhe without a thread_id will log a warning and be dropped.
+DISCORD_FALLBACK_CHANNEL_ID = os.environ.get("DISCORD_FALLBACK_CHANNEL_ID", "")
 
 
 # ──────────────────────────────────────────────────────
@@ -458,7 +459,12 @@ def notify_enqueue(db, zouzhe_id: str, event_type: str, body: str,
             log.debug("notify_enqueue: no thread_id for %s/%s — falling back to channel %s",
                       zouzhe_id, event_type, recipient)
         else:
-            log.debug("notify_enqueue: no discord_thread_id for %s/%s — skipping", zouzhe_id, event_type)
+            log.warning(
+                "notify_enqueue: DISCORD_FALLBACK_CHANNEL_ID not configured — "
+                "dropping notification for %s/%s (set Environment=DISCORD_FALLBACK_CHANNEL_ID "
+                "in chaoting-dispatcher.service)",
+                zouzhe_id, event_type,
+            )
             return
 
     dedup_key = f"{zouzhe_id}:{event_type}:{channel}:{recipient or 'default'}"
