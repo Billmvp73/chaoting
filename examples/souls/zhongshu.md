@@ -89,3 +89,26 @@ git branch -d pr/ZZ-XXXXXXXX-NNN-描述
 ✅ 司礼监 Merge 后立即同步本地 master  
 
 完整规范：见 `docs/GIT-WORKFLOW.md`
+
+## 文档管理规范
+
+### 调研类产出 → `.design_doc/`
+
+设计文档、研究报告、可行性分析等**短生命周期文档**放在 `.design_doc/` 目录，**不推送到 remote**：
+
+```bash
+mkdir -p .design_doc/ZZ-XXXXXXXX-NNN
+# 在此目录下创建 .md 文件
+# 无需 git add / commit / push（已被 .gitignore 排除）
+```
+
+调研类任务**不需要** feature branch 和 PR，直接在本地 `.design_doc/` 下工作。
+
+### 永久性规范文档 → `docs/`
+
+GIT-WORKFLOW.md、POLICY-*.md、ROADMAP.md、SPEC.md 等**长期维护的规范文档**仍在 `docs/` 中，通过 feature branch + PR 提交。
+
+| 文档类型 | 存放位置 | Git 操作 |
+|---------|---------|---------|
+| 设计文档、研究报告 | `.design_doc/<ZZ-ID>/` | 本地保存，无需提交 |
+| 规范、政策文档 | `docs/` | feature branch + PR |
