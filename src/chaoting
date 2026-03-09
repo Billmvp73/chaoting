@@ -4,11 +4,19 @@
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timezone
 
 CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
+OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "themachine")
+
+# Shared audit log module
+_src_dir = os.path.dirname(os.path.abspath(__file__))
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+from chaoting_log import zouzhe_log  # noqa: E402
 
 
 def get_db():
@@ -18,6 +26,129 @@ def get_db():
     db.execute("PRAGMA busy_timeout=5000")
     return db
 
+
+def _send_thread_notify(thread_id: str, body: str) -> bool:
+    """Send a message to a Discord Thread. Never raises — failure is logged to stderr.
+    Returns True if the message was sent successfully, False otherwise.
+    """
+    if not thread_id:
+        return False
+    try:
+        result = subprocess.run(
+            [OPENCLAW_CLI, "message", "thread", "reply",
+             "--channel", "discord", "-t", thread_id, "-m", body[:2000]],
+            timeout=30,
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception as exc:
+        print(f"[WARN] thread notify failed: {exc}", file=sys.stderr)
+        return False
+
+
+def _update_last_thread_activity(db, zouzhe_id: str) -> None:
+    """Update last_thread_activity timestamp after a successful Thread push."""
+    try:
+        db.execute(
+            "UPDATE zouzhe SET last_thread_activity = strftime('%Y-%m-%dT%H:%M:%S','now') "
+            "WHERE id = ?", (zouzhe_id,)
+        )
+        db.commit()
+    except Exception as exc:
+        print(f"[WARN] last_thread_activity update failed: {exc}", file=sys.stderr)
+
+
+def _dept_prefix(agent: str) -> str:
+    """Return the department prefix for Thread messages per POLICY-thread-format.md."""
+    _MAP = {
+        "bingbu": "【兵部】⚔️",
+        "gongbu": "【工部】🔧",
+        "hubu":   "【户部】💼",
+        "libu":   "【吏部】👥",
+        "libu_hr":"【吏部】👥",
+        "libu_data":"【户部】💼",
+        "xingbu": "【刑部】⚖️",
+        "libu_rites":"【礼部】🎖️",
+        "zhongshu":"【中书省】📝",
+        "menxia": "【门下省】🏛️",
+        "silijian":"【司礼监】🏛️",
+        "jishi_tech": "【技术给事中】🔍",
+        "jishi_risk": "【风险给事中】⚠️",
+        "jishi_resource": "【资源给事中】💰",
+        "jishi_compliance": "【合规给事中】✔️",
+    }
+    return _MAP.get(agent, f"【{agent}】")
+
+
+def _fmt_done_thread(zid: str, agent: str, output: str, summary: str) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    prefix = _dept_prefix(agent)
+    out_lines = (output or "").strip()[:600]
+    return (
+        f"{prefix} 任务完成\n\n"
+        f"奏折：`{zid}`\n"
+        f"完成时间：{ts}\n\n"
+        f"**【工作内容】**\n{out_lines}\n\n"
+        f"**【输出概述】**\n{summary or '(无摘要)'}\n\n"
+        f"如有问题，请在此 Thread 中讨论。"
+    )
+
+
+def _fmt_fail_thread(zid: str, agent: str, reason: str) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    prefix = _dept_prefix(agent)
+    return (
+        f"{prefix} 任务失败\n\n"
+        f"奏折：`{zid}`\n"
+        f"失败时间：{ts}\n\n"
+        f"**【失败原因】**\n{reason or '(未说明)'}\n\n"
+        f"请在此 Thread 中讨论处理方案。"
+    )
+
+
+def _fmt_plan_thread(zid: str, target_agent: str, next_state: str) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if next_state == "reviewing":
+        action = "计划已提交，进入门下省审核"
+        detail = f"• 负责部门：{target_agent}\n• 下一状态：reviewing（等待给事中投票）"
+    else:
+        action = "计划已提交，直接进入执行（免审）"
+        detail = f"• 负责部门：{target_agent}\n• 下一状态：executing"
+    return (
+        f"【中书省】📝 规划方案已提出\n\n"
+        f"奏折：`{zid}`\n"
+        f"提交时间：{ts}\n\n"
+        f"{action}\n{detail}"
+    )
+
+
+def _fmt_vote_thread(zid: str, jishi_id: str, vote: str, reason: str, round_num: int) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    prefix = _dept_prefix(jishi_id)
+    symbol = "GO ✅" if vote == "go" else "NOGO ❌"
+    reason_line = f"\n\n**【审查意见】**\n{reason}" if reason else ""
+    return (
+        f"{prefix} 审查完成\n\n"
+        f"奏折：`{zid}`\n"
+        f"投票：{symbol}\n"
+        f"轮次：第 {round_num} 轮\n"
+        f"时间：{ts}"
+        f"{reason_line}"
+    )
+
+
+def _fmt_revise_thread(zid: str, caller: str, reason: str, count: int, target_state: str) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    target_label = "重新规划（revising）" if target_state == "revising" else "重新执行（executing）"
+    prefix = _dept_prefix(caller)
+    return (
+        f"{prefix} 奏折退回返工\n\n"
+        f"奏折：`{zid}`\n"
+        f"第 {count} 次返工 → {target_label}\n"
+        f"时间：{ts}\n\n"
+        f"**【返工原因】**\n{reason}"
+    )
 
 def out(data, ok=True):
     code = 0 if ok else 1
@@ -163,6 +294,13 @@ def cmd_status(args):
         except Exception:
             pass
 
+    # Parse revise_history JSON for display
+    if zouzhe.get("revise_history"):
+        try:
+            zouzhe["revise_history"] = json.loads(zouzhe["revise_history"])
+        except Exception:
+            pass
+
     toupiao = [
         {
             "id": r["id"],
@@ -215,6 +353,202 @@ def cmd_status(args):
         "liuzhuan": liuzhuan,
         "zoubao": zoubao,
     })
+
+
+def cmd_revise(args):
+    """Rollback a done zouzhe to revising state for full re-planning and re-review.
+
+    Usage: chaoting revise <zouzhe_id> '<reason>' [--review N]
+
+    State transition: done → revising (dispatcher routes revising→planning→zhongshu)
+
+    --review N  Set review_required level for the new round (0-3).
+                Default: 2 (jishi_tech + jishi_risk — 司礼监标准审核级别).
+
+    In one atomic transaction:
+    1. Archive current toupiao votes into revise_history[].votes, then DELETE them
+    2. Archive output/summary into revise_history[]
+    3. Reset revise_count=0, plan=NULL (fresh planning round)
+    4. Set state=revising, increment exec_revise_count, clear output/summary
+
+    Only silijian and zhongshu may initiate (OPENCLAW_AGENT_ID).
+    exec_revise_count capped at 3 (normal/high) or 5 (critical).
+    """
+    if len(args) < 2:
+        out({"ok": False, "error": "usage: chaoting revise <zouzhe_id> '<reason>' [--review N]"}, ok=False)
+
+    zid = args[0]
+    reason = args[1]
+
+    # Parse --review flag (default: 2 — 司礼监标准审核级别: jishi_tech + jishi_risk)
+    new_review_required = 2
+    i = 2
+    while i < len(args):
+        if args[i] == "--review" and i + 1 < len(args):
+            try:
+                new_review_required = int(args[i + 1])
+                if new_review_required not in (0, 1, 2, 3):
+                    out({"ok": False, "error": "--review must be 0, 1, 2, or 3"}, ok=False)
+            except ValueError:
+                out({"ok": False, "error": "--review must be an integer (0-3)"}, ok=False)
+            i += 2
+        else:
+            i += 1
+
+    # Permission check: only silijian and zhongshu may revise
+    caller = os.environ.get("OPENCLAW_AGENT_ID", "")
+    allowed_callers = {"silijian", "zhongshu"}
+    if caller not in allowed_callers:
+        out({
+            "ok": False,
+            "error": f"权限不足：只有 silijian 或 zhongshu 可发起返工（当前身份: '{caller}'）",
+        }, ok=False)
+
+    db = get_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+
+        row = db.execute("SELECT * FROM zouzhe WHERE id = ?", (zid,)).fetchone()
+        if not row:
+            db.execute("ROLLBACK")
+            db.close()
+            out({"ok": False, "error": f"zouzhe {zid} not found"}, ok=False)
+
+        if row["state"] != "done":
+            db.execute("ROLLBACK")
+            db.close()
+            out({"ok": False, "error": f"只有 done 状态的奏折可返工，当前状态: '{row['state']}'"}, ok=False)
+
+        # Check revise count cap
+        current_count = row["exec_revise_count"] or 0
+        max_revises = 5 if row["priority"] == "critical" else 3
+        if current_count >= max_revises:
+            db.execute("ROLLBACK")
+            db.close()
+            out({
+                "ok": False,
+                "error": f"超过最大返工次数（{max_revises}次），请新建奏折",
+                "exec_revise_count": current_count,
+            }, ok=False)
+
+        # Archive current toupiao votes (all rounds) before deleting
+        vote_rows = db.execute(
+            "SELECT round, jishi_id, agent_id, vote, reason, timestamp "
+            "FROM toupiao WHERE zouzhe_id = ? ORDER BY round, id",
+            (zid,),
+        ).fetchall()
+        archived_votes = [
+            {
+                "round": v["round"],
+                "jishi_id": v["jishi_id"],
+                "agent_id": v["agent_id"],
+                "vote": v["vote"],
+                "reason": v["reason"],
+                "timestamp": v["timestamp"],
+            }
+            for v in vote_rows
+        ]
+
+        # Build revise_history archive entry (includes votes)
+        existing_history = []
+        if row["revise_history"]:
+            try:
+                existing_history = json.loads(row["revise_history"])
+            except Exception:
+                existing_history = []
+
+        archive_entry = {
+            "round": current_count + 1,
+            "output": row["output"],
+            "summary": row["summary"],
+            "plan": json.loads(row["plan"]) if row["plan"] else None,
+            "votes": archived_votes,
+            "reason": reason,
+            "revised_by": caller,
+            "revised_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+            "prev_review_required": row["review_required"],
+            "new_review_required": new_review_required,
+        }
+        existing_history.append(archive_entry)
+        new_history_json = json.dumps(existing_history, ensure_ascii=False)
+
+        # Delete archived votes from toupiao (clean slate for new review round)
+        db.execute("DELETE FROM toupiao WHERE zouzhe_id = ?", (zid,))
+
+        # CAS update: only transition from done
+        # Reset revise_count=0 and plan=NULL for fresh planning + review round
+        # Also update review_required to the requested level (default 2)
+        cursor = db.execute(
+            "UPDATE zouzhe SET "
+            "  state = 'revising', "
+            "  exec_revise_count = exec_revise_count + 1, "
+            "  revise_count = 0, "
+            "  plan = NULL, "
+            "  review_required = ?, "
+            "  review_agents = NULL, "
+            "  revise_history = ?, "
+            "  output = NULL, "
+            "  summary = NULL, "
+            "  error = NULL, "
+            "  dispatched_at = NULL, "
+            "  updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+            "WHERE id = ? AND state = 'done' "
+            "RETURNING id, exec_revise_count",
+            (new_review_required, new_history_json, zid),
+        )
+        result = cursor.fetchone()
+        if not result:
+            db.execute("ROLLBACK")
+            db.close()
+            out({"ok": False, "error": "状态冲突：奏折不再是 done 状态（CAS 失败）"}, ok=False)
+
+        new_count = result["exec_revise_count"]
+
+        # Audit trail in liuzhuan
+        db.execute(
+            "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+            "VALUES (?, ?, 'zhongshu', 'revise', ?)",
+            (zid, caller,
+             f"退回修改（第 {new_count} 次），原因：{reason}；投票已清除，重新进入规划"),
+        )
+
+        db.execute("COMMIT")
+        db.close()
+
+        zouzhe_log(zid, caller, "STATE_TRANSITION",
+                   "done → revising（重新规划+评审）",
+                   actor=caller,
+                   reason=reason,
+                   revise_count=new_count,
+                   votes_archived=len(archived_votes),
+                   plan_cleared="YES",
+                   review_required=new_review_required)
+
+        # Push revise notification to Thread
+        thread_id = row["discord_thread_id"]
+        if thread_id:
+            _send_thread_notify(
+                thread_id,
+                _fmt_revise_thread(zid, caller, reason, new_count, "revising"),
+            )
+        out({
+            "ok": True,
+            "zouzhe_id": zid,
+            "state": "revising",
+            "exec_revise_count": new_count,
+            "votes_cleared": len(archived_votes),
+            "review_required": new_review_required,
+            "reason": reason,
+            "revised_by": caller,
+        })
+
+    except Exception as e:
+        try:
+            db.execute("ROLLBACK")
+        except Exception:
+            pass
+        db.close()
+        out({"ok": False, "error": str(e)}, ok=False)
 
 
 def cmd_pull(args):
@@ -286,12 +620,14 @@ def cmd_plan(args):
 
     # Check if review is required
     zouzhe = db.execute(
-        "SELECT id, review_required FROM zouzhe WHERE id = ? AND state = 'planning'",
+        "SELECT id, review_required, discord_thread_id FROM zouzhe WHERE id = ? AND state = 'planning'",
         (zid,),
     ).fetchone()
     if not zouzhe:
         db.close()
         out({"ok": False, "error": "state conflict — zouzhe not in planning state"}, ok=False)
+
+    thread_id = zouzhe["discord_thread_id"]
 
     if zouzhe["review_required"]:
         # Enter reviewing state — dispatcher will dispatch to 给事中
@@ -313,6 +649,12 @@ def cmd_plan(args):
         )
         db.commit()
         db.close()
+        zouzhe_log(zid, "zhongshu", "PLAN_SUBMIT",
+                   "计划已提交门下省审核",
+                   target_agent=target_agent,
+                   next_state="reviewing")
+        if thread_id:
+            _send_thread_notify(thread_id, _fmt_plan_thread(zid, target_agent, "reviewing"))
         out({"ok": True, "zouzhe_id": zid, "state": "reviewing", "target_agent": target_agent})
     else:
         # Skip review — go directly to executing
@@ -334,6 +676,12 @@ def cmd_plan(args):
         )
         db.commit()
         db.close()
+        zouzhe_log(zid, "zhongshu", "PLAN_SUBMIT",
+                   "计划已提交，直接进入执行（免审）",
+                   target_agent=target_agent,
+                   next_state="executing")
+        if thread_id:
+            _send_thread_notify(thread_id, _fmt_plan_thread(zid, target_agent, "executing"))
         out({"ok": True, "zouzhe_id": zid, "state": "executing", "target_agent": target_agent})
 
 
@@ -383,14 +731,33 @@ def cmd_done(args):
         db.close()
         out({"ok": False, "error": "state conflict — zouzhe not in executing state"}, ok=False)
 
+    zz = db.execute("SELECT assigned_agent, discord_thread_id FROM zouzhe WHERE id = ?", (zid,)).fetchone()
+    assigned_agent = zz["assigned_agent"] if zz else None
+    thread_id = zz["discord_thread_id"] if zz else None
+
     db.execute(
         "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
         "VALUES (?, ?, 'dispatcher', 'complete', ?)",
-        (zid, db.execute("SELECT assigned_agent FROM zouzhe WHERE id = ?", (zid,)).fetchone()["assigned_agent"],
-         summary),
+        (zid, assigned_agent, summary),
     )
     db.commit()
     db.close()
+
+    # Audit log: record completion in agent's log file
+    zouzhe_log(zid, assigned_agent or "unknown", "COMPLETED",
+               "✅ 任务完成",
+               output=(output or "")[:500],
+               summary=summary)
+
+    # Auto-push completion to Discord Thread (non-blocking)
+    if thread_id:
+        sent = _send_thread_notify(
+            thread_id,
+            _fmt_done_thread(zid, assigned_agent or "unknown", output, summary),
+        )
+        if sent:
+            _update_last_thread_activity(db, zid)
+
     out({"ok": True, "zouzhe_id": zid, "state": "done"})
 
 
@@ -413,14 +780,32 @@ def cmd_fail(args):
         db.close()
         out({"ok": False, "error": "state conflict — zouzhe not in active state"}, ok=False)
 
+    zz = db.execute("SELECT assigned_agent, discord_thread_id FROM zouzhe WHERE id = ?", (zid,)).fetchone()
+    assigned_agent = zz["assigned_agent"] if zz else None
+    thread_id = zz["discord_thread_id"] if zz else None
+
     db.execute(
         "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
         "VALUES (?, ?, 'dispatcher', 'fail', ?)",
-        (zid, db.execute("SELECT assigned_agent FROM zouzhe WHERE id = ?", (zid,)).fetchone()["assigned_agent"],
-         reason),
+        (zid, assigned_agent, reason),
     )
     db.commit()
     db.close()
+
+    # Audit log: record failure in agent's log file
+    zouzhe_log(zid, assigned_agent or "unknown", "FAILED",
+               "❌ 任务失败",
+               reason=reason)
+
+    # Auto-push failure to Discord Thread (non-blocking)
+    if thread_id:
+        sent = _send_thread_notify(
+            thread_id,
+            _fmt_fail_thread(zid, assigned_agent or "unknown", reason),
+        )
+        if sent:
+            _update_last_thread_activity(db, zid)
+
     out({"ok": True, "zouzhe_id": zid, "state": "failed"})
 
 
@@ -479,7 +864,7 @@ def cmd_vote(args):
         db.execute("BEGIN IMMEDIATE")
 
         zouzhe = db.execute(
-            "SELECT id, revise_count FROM zouzhe WHERE id = ? AND state = 'reviewing'",
+            "SELECT id, revise_count, discord_thread_id FROM zouzhe WHERE id = ? AND state = 'reviewing'",
             (zid,),
         ).fetchone()
 
@@ -502,7 +887,18 @@ def cmd_vote(args):
             out({"ok": False, "error": "already voted this round"}, ok=False)
 
         db.execute("COMMIT")
+        thread_id = zouzhe["discord_thread_id"]
         db.close()
+        zouzhe_log(zid, jishi_id, "VOTE",
+                   vote.upper(),
+                   jishi=jishi_id,
+                   round=current_round,
+                   reason=reason)
+        if thread_id:
+            _send_thread_notify(
+                thread_id,
+                _fmt_vote_thread(zid, jishi_id, vote, reason, current_round),
+            )
         out({"ok": True, "action": "vote", "zouzhe_id": zid, "vote": vote,
              "jishi_id": jishi_id, "round": current_round})
     except Exception as e:
@@ -518,6 +914,7 @@ COMMANDS = {
     "new": cmd_new,
     "list": cmd_list,
     "status": cmd_status,
+    "revise": cmd_revise,
     "pull": cmd_pull,
     "plan": cmd_plan,
     "progress": cmd_progress,

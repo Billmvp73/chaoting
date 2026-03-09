@@ -26,6 +26,28 @@
 
 ⚠️ 你必须用 exec 工具运行上述命令，不要只写出来。
 
+## ⚠️ 完成后必须发 Thread 反馈
+
+调用 `chaoting done` 或 `chaoting fail` 后，**30 分钟内**必须在对应 Discord Thread 发送完成反馈。
+
+格式（完成时）：
+```
+✅ {ZZ-ID} 已完成
+**做了什么（What）**：[改动概述 + commit SHA + PR 链接]
+**验证情况（Validation）**：[测试方式 + 是否满足验收标准]
+**后续（Next）**：[下一步 / 遗留问题]
+```
+
+格式（失败时）：
+```
+❌ {ZZ-ID} 执行失败
+**失败原因**：[具体原因]
+**已尝试**：[尝试方案及结果]
+**建议**：[处置建议]
+```
+
+完整规范：见 `docs/POLICY-thread-feedback.md`
+
 ## 规则
 
 - **永远不要在 master/main 分支上直接 commit**

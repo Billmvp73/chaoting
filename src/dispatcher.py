@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import subprocess
 import tarfile
+import textwrap
 import threading
 import time
 from datetime import datetime
@@ -17,7 +18,14 @@ from logging.handlers import RotatingFileHandler
 CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
 CHAOTING_CLI = os.path.join(CHAOTING_DIR, "src", "chaoting") if os.path.isfile(os.path.join(CHAOTING_DIR, "src", "chaoting")) else os.path.join(CHAOTING_DIR, "chaoting")
-LOGS_DIR = os.path.join(CHAOTING_DIR, "logs")
+
+# Shared audit log module — also used by src/chaoting CLI
+import sys as _sys
+_src_dir = os.path.dirname(os.path.abspath(__file__))
+if _src_dir not in _sys.path:
+    _sys.path.insert(0, _src_dir)
+from chaoting_log import zouzhe_log, LOG_SEPARATOR  # noqa: E402
+from chaoting_log import LOGS_DIR  # noqa: E402
 
 
 logging.basicConfig(
@@ -75,104 +83,57 @@ OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "openclaw")
 # 审计日志系统 — 结构化奏折生命周期追踪
 # ──────────────────────────────────────────────────────
 
-_audit_loggers: dict = {}           # (zouzhe_id, role) -> logging.Logger
-_audit_lock = threading.Lock()      # Protects _audit_loggers dict
 _audit_logged: set = set()          # (zouzhe_id, event_label) — dedup for CLI-triggered events
 
-LOG_SEPARATOR = "━" * 42            # Visual block separator in log files
 
-
-def _get_audit_logger(zouzhe_id: str, role: str) -> logging.Logger:
-    """Get or create a RotatingFileHandler-backed logger for (zouzhe_id, role)."""
-    key = (zouzhe_id, role)
-    with _audit_lock:
-        if key not in _audit_loggers:
-            log_dir = os.path.join(LOGS_DIR, zouzhe_id)
-            os.makedirs(log_dir, exist_ok=True)
-            log_file = os.path.join(log_dir, f"{role}.log")
-
-            logger_name = f"chaoting.audit.{zouzhe_id}.{role}"
-            logger = logging.getLogger(logger_name)
-            logger.setLevel(logging.INFO)
-            logger.propagate = False   # Don't bubble to root dispatcher logger
-
-            if not logger.handlers:
-                handler = RotatingFileHandler(
-                    log_file,
-                    maxBytes=10 * 1024 * 1024,  # 10 MB
-                    backupCount=3,
-                    encoding="utf-8",
-                    mode="a",
-                )
-                handler.setFormatter(logging.Formatter("%(message)s"))
-                logger.addHandler(handler)
-
-            _audit_loggers[key] = logger
-        return _audit_loggers[key]
-
-
-def zouzhe_log(zouzhe_id: str, role: str, event_type: str, headline: str,
-               content: str = "", **kwargs):
-    """Write a rich structured log block to logs/{zouzhe_id}/{role}.log.
-
-    Block format:
-        [YYYY-MM-DD HH:MM:SS] ▶ EVENT_TYPE
-        headline
-
-        KEY: value
-        ...
-
-        content (multi-line, optional)
-
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    Uses RotatingFileHandler (10 MB / backupCount=3).
-    Wrapped in try/except — never raises, never blocks main flow.
-    """
-    try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        lines = [f"\n[{timestamp}] ▶ {event_type}", headline]
-
-        kv_lines = [f"{k.upper()}: {v}" for k, v in kwargs.items() if v is not None and v != ""]
-        if kv_lines:
-            lines.append("")
-            lines.extend(kv_lines)
-
-        if content:
-            lines.append("")
-            lines.append(content)
-
-        lines.append("")
-        lines.append(LOG_SEPARATOR)
-
-        block = "\n".join(lines)
-        logger = _get_audit_logger(zouzhe_id, role)
-        logger.info(block)
-    except Exception as e:
-        log.warning("zouzhe_log failed for %s/%s/%s: %s", zouzhe_id, role, event_type, e)
+def _wrap(text: str, width: int = 78, indent: str = "   ") -> str:
+    """Wrap long text at width, indenting continuation lines."""
+    if not text or len(text) <= width:
+        return text
+    return textwrap.fill(text, width=width, subsequent_indent=indent)
 
 
 def _format_plan_content(plan_json_str: str) -> str:
-    """Format plan JSON into human-readable multi-line text for log blocks."""
+    """Format plan JSON into sectioned, human-readable multi-line text."""
     if not plan_json_str:
         return "(无方案)"
     try:
         plan = json.loads(plan_json_str)
-        lines = []
+        sections = []
+
+        # 【基本信息】
+        info_lines = ["【基本信息】"]
         if plan.get("target_agent"):
-            lines.append(f"TARGET_AGENT: {plan['target_agent']}")
+            info_lines.append(f"• 目标部门：{plan['target_agent']}")
         if plan.get("repo_path"):
-            lines.append(f"REPO_PATH: {plan['repo_path']}")
+            info_lines.append(f"• 仓库：{plan['repo_path']}")
         if plan.get("target_files"):
             tf = plan["target_files"]
-            lines.append(f"TARGET_FILES: {', '.join(tf) if isinstance(tf, list) else tf}")
-        if plan.get("steps"):
-            lines.append("\n【步骤】")
-            for i, step in enumerate(plan["steps"], 1):
-                lines.append(f"{i}. {step}")
-        if plan.get("acceptance_criteria"):
-            lines.append(f"\n【验收标准】\n{plan['acceptance_criteria']}")
-        return "\n".join(lines) if lines else json.dumps(plan, ensure_ascii=False, indent=2)
+            files_str = ", ".join(tf) if isinstance(tf, list) else str(tf)
+            info_lines.append(f"• 文件：{files_str}")
+        if len(info_lines) > 1:
+            sections.append("\n".join(info_lines))
+
+        # 【执行步骤】
+        steps = plan.get("steps") or []
+        if steps:
+            step_lines = [f"【执行步骤】（共 {len(steps)} 步）", ""]
+            for i, step in enumerate(steps, 1):
+                wrapped = _wrap(str(step), width=74, indent="   ")
+                step_lines.append(f"{i}. {wrapped}")
+            sections.append("\n".join(step_lines))
+
+        # 【验收标准】
+        ac = plan.get("acceptance_criteria")
+        if ac:
+            ac_lines = ["【验收标准】"]
+            for criterion in str(ac).split("\n"):
+                criterion = criterion.strip()
+                if criterion:
+                    ac_lines.append(f"• {_wrap(criterion, width=74, indent='  ')}")
+            sections.append("\n".join(ac_lines))
+
+        return "\n\n".join(sections) if sections else json.dumps(plan, ensure_ascii=False, indent=2)
     except Exception:
         return str(plan_json_str)[:2000]
 
@@ -187,7 +148,8 @@ def _format_votes_content(votes) -> str:
         symbol = "✅ GO" if vote_val == "go" else "❌ NOGO"
         lines.append(f"• {jishi}: {symbol}")
         if reason:
-            lines.append(f"  REASON: {reason}")
+            wrapped_reason = _wrap(reason, width=74, indent="     ")
+            lines.append(f"  REASON: {wrapped_reason}")
     return "\n".join(lines)
 
 
@@ -517,6 +479,14 @@ def notify_worker():
                     "updated_at=strftime('%Y-%m-%dT%H:%M:%S','now') WHERE id=?",
                     (row["id"],),
                 )
+                # Update last_thread_activity on the zouzhe record
+                try:
+                    db.execute(
+                        "UPDATE zouzhe SET last_thread_activity = strftime('%Y-%m-%dT%H:%M:%S','now') "
+                        "WHERE id = ?", (row["zouzhe_id"],)
+                    )
+                except Exception:
+                    pass  # Column might not exist in older DBs; non-fatal
                 log.info("Notification sent: tongzhi#%d %s/%s",
                          row["id"], row["zouzhe_id"], row["event_type"])
             else:
@@ -752,7 +722,7 @@ def check_votes(db, zouzhe):
         for v in votes:
             zouzhe_log(zouzhe["id"], v["jishi_id"], "VOTE",
                        v["vote"].upper(),
-                       jishi=v["jishi_id"], reason=v.get("reason", ""))
+                       jishi=v["jishi_id"], reason=(v["reason"] or ""))
         # Rich APPROVED block in menxia.log
         zouzhe_log(zouzhe["id"], "menxia", "APPROVED",
                    "✅ 门下省准奏，全票通过",
@@ -786,7 +756,7 @@ def check_votes(db, zouzhe):
             for v in votes:
                 zouzhe_log(zouzhe["id"], v["jishi_id"], "VOTE",
                            v["vote"].upper(),
-                           jishi=v["jishi_id"], reason=v.get("reason", ""))
+                           jishi=v["jishi_id"], reason=(v["reason"] or ""))
             zouzhe_log(zouzhe["id"], "menxia", "REJECTED",
                        "⛔ 三驳失败，呈御前裁决",
                        content=_format_votes_content(votes))
@@ -833,7 +803,7 @@ def check_votes(db, zouzhe):
             for v in votes:
                 zouzhe_log(zouzhe["id"], v["jishi_id"], "VOTE",
                            v["vote"].upper(),
-                           jishi=v["jishi_id"], reason=v.get("reason", ""))
+                           jishi=v["jishi_id"], reason=(v["reason"] or ""))
             # Rich PLAN_REVISE_FEEDBACK block in zhongshu.log
             zouzhe_log(zouzhe["id"], "zhongshu", "PLAN_REVISE_FEEDBACK",
                        f"📥 收到门下省封驳意见（第 {current_round} 轮），计划需调整",
@@ -932,13 +902,28 @@ def poll_and_dispatch():
                     # Rich RECEIVED log for zhongshu (first time) or revising feedback loop
                     if current_state == "created":
                         _desc = (row["description"] or "")[:600]
+                        _review_agents = row["review_agents"] or "default"
+                        _review_lvl = row["review_required"] or 0
+                        # silijian.log — records what was dispatched and why
+                        zouzhe_log(row["id"], "silijian", "CREATED",
+                                   "📜 奏折已创建，派发朝廷流程",
+                                   content=f"【奏折信息】\n"
+                                           f"• 奏折ID：{row['id']}\n"
+                                           f"• 标题：{row['title']}\n"
+                                           f"• 优先级：{row['priority']}\n"
+                                           f"• 审核等级：{_review_lvl}\n"
+                                           f"• 审核部门：{_review_agents}\n"
+                                           f"• 超时设置：{row['timeout_sec']}s\n\n"
+                                           f"【奏折描述】\n{_desc}")
+                        # zhongshu.log — records arrival for planning
                         zouzhe_log(row["id"], "zhongshu", "RECEIVED",
-                                   "📬 从 dispatcher 收到新奏折",
-                                   content=f"ZOUZHE_ID: {row['id']}\n"
-                                           f"TITLE: {row['title']}\n"
-                                           f"PRIORITY: {row['priority']}\n"
-                                           f"TIMEOUT: {row['timeout_sec']}s\n\n"
-                                           f"【描述】\n{_desc}")
+                                   "📬 从 dispatcher 收到新奏折，开始制定方案",
+                                   content=f"【基本信息】\n"
+                                           f"• 奏折ID：{row['id']}\n"
+                                           f"• 标题：{row['title']}\n"
+                                           f"• 优先级：{row['priority']}\n"
+                                           f"• 超时：{row['timeout_sec']}s\n\n"
+                                           f"【任务描述】\n{_desc}")
                     zouzhe_log(row["id"], "dispatcher", "STATE",
                                f"{current_state} -> {next_state}",
                                actor="dispatcher", remark=f"dispatched to {agent_role}")
@@ -993,6 +978,37 @@ def poll_and_dispatch():
 
         # 5. Detect done/failed/timeout from CLI commands and enqueue notifications
         _check_new_done_failed(db)
+    finally:
+        db.close()
+
+
+def check_thread_activity_warning():
+    """Warn in log when active zouzhe with discord_thread_id have no Thread activity for 15+ min.
+
+    This detects cases where the CLI Thread push failed silently and the dispatcher's
+    tongzhi fallback also hasn't fired yet. Called every 5 minutes from main loop.
+    """
+    db = get_db()
+    try:
+        rows = db.execute("""
+            SELECT id, title, state, assigned_agent, discord_thread_id,
+                   last_thread_activity, updated_at
+            FROM zouzhe
+            WHERE state IN ('planning', 'reviewing', 'executing')
+              AND discord_thread_id IS NOT NULL
+              AND (
+                last_thread_activity IS NULL
+                OR (julianday('now') - julianday(last_thread_activity)) * 1440 > 15
+              )
+        """).fetchall()
+        for row in rows:
+            last = row["last_thread_activity"] or "从未发送"
+            log.warning(
+                "Thread 活跃度告警 %s [%s] 超过 15 分钟无 Thread 消息 | assigned=%s | last_activity=%s",
+                row["id"], row["state"], row["assigned_agent"] or "?", last,
+            )
+    except Exception as e:
+        log.warning("check_thread_activity_warning error: %s", e)
     finally:
         db.close()
 
@@ -1108,6 +1124,7 @@ def main():
 
     last_timeout_check = 0.0
     last_archive_check = 0.0
+    last_activity_check = 0.0
     log.info("Entering main loop (poll=%ds, timeout_check=%ds)", POLL_INTERVAL, TIMEOUT_CHECK_INTERVAL)
 
     while True:
@@ -1123,6 +1140,10 @@ def main():
             if now - last_archive_check >= 3600:   # 每小时归档一次
                 archive_old_logs()
                 last_archive_check = now
+
+            if now - last_activity_check >= 300:   # 每5分钟检查 Thread 活跃度
+                check_thread_activity_warning()
+                last_activity_check = now
         except Exception:
             log.exception("Error in main loop")
 
