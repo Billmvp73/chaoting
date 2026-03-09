@@ -156,7 +156,7 @@ def _fmt_fail_thread(zid: str, agent: str, reason: str) -> str:
     )
 
 
-def _fmt_plan_thread(zid: str, target_agent: str, next_state: str) -> str:
+def _fmt_plan_thread(zid: str, target_agent: str, next_state: str, plan_raw: str = None) -> str:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if next_state == "reviewing":
         action = "计划已提交，进入门下省审核"
@@ -164,11 +164,25 @@ def _fmt_plan_thread(zid: str, target_agent: str, next_state: str) -> str:
     else:
         action = "计划已提交，直接进入执行（免审）"
         detail = f"• 负责部门：{target_agent}\n• 下一状态：executing"
+    plan_section = ""
+    if plan_raw:
+        try:
+            plan = json.loads(plan_raw)
+            parts = []
+            if plan.get("steps"):
+                steps_text = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(plan["steps"]))
+                parts.append(f"**执行步骤：**\n{steps_text}")
+            if plan.get("acceptance_criteria"):
+                parts.append(f"**验收标准：** {plan['acceptance_criteria']}")
+            if parts:
+                plan_section = "\n\n" + "\n".join(parts)
+        except (json.JSONDecodeError, TypeError):
+            pass
     return (
         f"【中书省】📝 规划方案已提出\n\n"
         f"奏折：`{zid}`\n"
         f"提交时间：{ts}\n\n"
-        f"{action}\n{detail}"
+        f"{action}\n{detail}{plan_section}"
     )
 
 
@@ -719,7 +733,7 @@ def cmd_plan(args):
                    "计划已提交门下省审核",
                    target_agent=target_agent,
                    next_state="reviewing")
-        send_discord(zid, _fmt_plan_thread(zid, target_agent, "reviewing"), thread_id=thread_id)
+        send_discord(zid, _fmt_plan_thread(zid, target_agent, "reviewing", plan_raw), thread_id=thread_id)
         out({"ok": True, "zouzhe_id": zid, "state": "reviewing", "target_agent": target_agent})
     else:
         # Skip review — go directly to executing
@@ -745,7 +759,7 @@ def cmd_plan(args):
                    "计划已提交，直接进入执行（免审）",
                    target_agent=target_agent,
                    next_state="executing")
-        send_discord(zid, _fmt_plan_thread(zid, target_agent, "executing"), thread_id=thread_id)
+        send_discord(zid, _fmt_plan_thread(zid, target_agent, "executing", plan_raw), thread_id=thread_id)
         out({"ok": True, "zouzhe_id": zid, "state": "executing", "target_agent": target_agent})
 
 
