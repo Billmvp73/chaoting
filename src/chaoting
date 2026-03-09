@@ -39,12 +39,11 @@ def get_db():
     return db
 
 
-def _send_thread_notify(thread_id: str, body: str) -> bool:
-    """Send a message to a Discord Thread. Never raises — failure is logged to stderr.
-    Returns True if the message was sent successfully, False otherwise.
-    """
-    if not thread_id:
-        return False
+DISCORD_FALLBACK_CHANNEL_ID = os.environ.get("DISCORD_FALLBACK_CHANNEL_ID", "")
+
+
+def _send_discord_thread(thread_id: str, body: str) -> bool:
+    """Send a message to a Discord Thread. Returns True on success."""
     try:
         result = subprocess.run(
             [OPENCLAW_CLI, "message", "thread", "reply",
@@ -55,20 +54,58 @@ def _send_thread_notify(thread_id: str, body: str) -> bool:
         )
         return result.returncode == 0
     except Exception as exc:
-        print(f"[WARN] thread notify failed: {exc}", file=sys.stderr)
+        print(f"[WARN] discord thread send failed: {exc}", file=sys.stderr)
         return False
 
 
-def _update_last_thread_activity(db, zouzhe_id: str) -> None:
-    """Update last_thread_activity timestamp after a successful Thread push."""
+def _send_discord_channel(channel_id: str, body: str) -> bool:
+    """Send a message to a Discord channel. Returns True on success."""
     try:
-        db.execute(
-            "UPDATE zouzhe SET last_thread_activity = strftime('%Y-%m-%dT%H:%M:%S','now') "
-            "WHERE id = ?", (zouzhe_id,)
+        result = subprocess.run(
+            [OPENCLAW_CLI, "message", "send",
+             "--channel", "discord",
+             "--target", channel_id,
+             "--message", body[:2000]],
+            timeout=30,
+            capture_output=True,
+            check=False,
         )
-        db.commit()
+        return result.returncode == 0
     except Exception as exc:
-        print(f"[WARN] last_thread_activity update failed: {exc}", file=sys.stderr)
+        print(f"[WARN] discord channel send failed: {exc}", file=sys.stderr)
+        return False
+
+
+def send_discord(zouzhe_id: str, body: str, thread_id: str = None) -> bool:
+    """Send a Discord notification: thread if available, otherwise fallback channel.
+
+    If thread_id is not provided, looks it up from the zouzhe record.
+    Returns True if sent successfully, False otherwise. Never raises.
+    """
+    # Resolve thread_id from DB if not provided
+    if thread_id is None:
+        try:
+            db = get_db()
+            row = db.execute(
+                "SELECT discord_thread_id FROM zouzhe WHERE id = ?", (zouzhe_id,)
+            ).fetchone()
+            db.close()
+            if row and row["discord_thread_id"]:
+                thread_id = row["discord_thread_id"]
+        except Exception:
+            pass
+
+    if thread_id:
+        return _send_discord_thread(thread_id, body)
+
+    if DISCORD_FALLBACK_CHANNEL_ID:
+        return _send_discord_channel(DISCORD_FALLBACK_CHANNEL_ID, body)
+
+    print(f"[WARN] no thread_id and DISCORD_FALLBACK_CHANNEL_ID not set — "
+          f"notification dropped for {zouzhe_id}", file=sys.stderr)
+    return False
+
+
 
 
 def _dept_prefix(agent: str) -> str:
@@ -249,14 +286,14 @@ def cmd_new(args):
                    review_required=review_required,
                    timeout_sec=timeout_sec)
 
-        # Thread notification if thread_id provided at creation
-        if discord_thread_id:
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            _send_thread_notify(
-                discord_thread_id,
-                f"🏛️ **奏折已创建**\n\n奏折：{new_id}\n标题：{title}\n优先级：{priority}\n"
-                f"审核级别：{review_required}\n创建时间：{ts}\n\n等待中书省规划方案……",
-            )
+        # Discord notification for task creation
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        send_discord(
+            new_id,
+            f"🏛️ **奏折已创建**\n\n奏折：{new_id}\n标题：{title}\n优先级：{priority}\n"
+            f"审核级别：{review_required}\n创建时间：{ts}\n\n等待中书省规划方案……",
+            thread_id=discord_thread_id,
+        )
 
         out({"ok": True, "id": new_id, "state": "created", "discord_thread_id": discord_thread_id})
     except Exception as e:
@@ -554,13 +591,12 @@ def cmd_revise(args):
                    plan_cleared="YES",
                    review_required=new_review_required)
 
-        # Push revise notification to Thread
-        thread_id = row["discord_thread_id"]
-        if thread_id:
-            _send_thread_notify(
-                thread_id,
-                _fmt_revise_thread(zid, caller, reason, new_count, "revising"),
-            )
+        # Discord notification for revise
+        send_discord(
+            zid,
+            _fmt_revise_thread(zid, caller, reason, new_count, "revising"),
+            thread_id=row["discord_thread_id"],
+        )
         out({
             "ok": True,
             "zouzhe_id": zid,
@@ -683,8 +719,7 @@ def cmd_plan(args):
                    "计划已提交门下省审核",
                    target_agent=target_agent,
                    next_state="reviewing")
-        if thread_id:
-            _send_thread_notify(thread_id, _fmt_plan_thread(zid, target_agent, "reviewing"))
+        send_discord(zid, _fmt_plan_thread(zid, target_agent, "reviewing"), thread_id=thread_id)
         out({"ok": True, "zouzhe_id": zid, "state": "reviewing", "target_agent": target_agent})
     else:
         # Skip review — go directly to executing
@@ -710,8 +745,7 @@ def cmd_plan(args):
                    "计划已提交，直接进入执行（免审）",
                    target_agent=target_agent,
                    next_state="executing")
-        if thread_id:
-            _send_thread_notify(thread_id, _fmt_plan_thread(zid, target_agent, "executing"))
+        send_discord(zid, _fmt_plan_thread(zid, target_agent, "executing"), thread_id=thread_id)
         out({"ok": True, "zouzhe_id": zid, "state": "executing", "target_agent": target_agent})
 
 
@@ -779,14 +813,8 @@ def cmd_done(args):
                output=(output or "")[:500],
                summary=summary)
 
-    # Auto-push completion to Discord Thread (non-blocking)
-    if thread_id:
-        sent = _send_thread_notify(
-            thread_id,
-            _fmt_done_thread(zid, assigned_agent or "unknown", output, summary),
-        )
-        if sent:
-            _update_last_thread_activity(db, zid)
+    # Discord notification for completion
+    send_discord(zid, _fmt_done_thread(zid, assigned_agent or "unknown", output, summary), thread_id=thread_id)
 
     out({"ok": True, "zouzhe_id": zid, "state": "done"})
 
@@ -827,14 +855,8 @@ def cmd_fail(args):
                "❌ 任务失败",
                reason=reason)
 
-    # Auto-push failure to Discord Thread (non-blocking)
-    if thread_id:
-        sent = _send_thread_notify(
-            thread_id,
-            _fmt_fail_thread(zid, assigned_agent or "unknown", reason),
-        )
-        if sent:
-            _update_last_thread_activity(db, zid)
+    # Discord notification for failure
+    send_discord(zid, _fmt_fail_thread(zid, assigned_agent or "unknown", reason), thread_id=thread_id)
 
     out({"ok": True, "zouzhe_id": zid, "state": "failed"})
 
@@ -924,11 +946,7 @@ def cmd_vote(args):
                    jishi=jishi_id,
                    round=current_round,
                    reason=reason)
-        if thread_id:
-            _send_thread_notify(
-                thread_id,
-                _fmt_vote_thread(zid, jishi_id, vote, reason, current_round),
-            )
+        send_discord(zid, _fmt_vote_thread(zid, jishi_id, vote, reason, current_round), thread_id=thread_id)
         out({"ok": True, "action": "vote", "zouzhe_id": zid, "vote": vote,
              "jishi_id": jishi_id, "round": current_round})
     except Exception as e:
@@ -938,6 +956,18 @@ def cmd_vote(args):
             pass
         db.close()
         out({"ok": False, "error": str(e)}, ok=False)
+
+
+def cmd_notify(args):
+    """Send a Discord notification for a zouzhe. Used by dispatcher for system events."""
+    if len(args) < 2:
+        out({"ok": False, "error": "usage: chaoting notify <zouzhe_id> '<message>'"}, ok=False)
+
+    zid = args[0]
+    body = args[1]
+
+    sent = send_discord(zid, body)
+    out({"ok": sent, "zouzhe_id": zid, "action": "notify"}, ok=sent)
 
 
 COMMANDS = {
@@ -952,6 +982,7 @@ COMMANDS = {
     "fail": cmd_fail,
     "context": cmd_context,
     "vote": cmd_vote,
+    "notify": cmd_notify,
 }
 
 

@@ -90,17 +90,10 @@ def get_review_agents(zouzhe):
 
 OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "themachine")
 
-# Fallback channel when no discord_thread_id is set on a zouzhe.
-# Must be configured via DISCORD_FALLBACK_CHANNEL_ID environment variable in the service file.
-# If not set, notifications for zouzhe without a thread_id will log a warning and be dropped.
-DISCORD_FALLBACK_CHANNEL_ID = os.environ.get("DISCORD_FALLBACK_CHANNEL_ID", "")
-
 
 # ──────────────────────────────────────────────────────
 # 审计日志系统 — 结构化奏折生命周期追踪
 # ──────────────────────────────────────────────────────
-
-_audit_logged: set = set()          # (zouzhe_id, event_label) — dedup for CLI-triggered events
 
 
 def _wrap(text: str, width: int = 78, indent: str = "   ") -> str:
@@ -317,420 +310,63 @@ def dispatch_agent(agent_id: str, zouzhe_id: str, timeout_sec: int, msg: str = N
     log.info("Dispatched %s to agent %s (timeout=%ds)", zouzhe_id, agent_id, timeout_sec)
 
 
-# ──────────────────────────────────────────────────────
-# 通知系统 — 第一阶段：Discord 频道通知
-# ──────────────────────────────────────────────────────
-
-PRIORITY_EMOJI = {
-    "urgent":   "🚨",
-    "critical": "🚨",
-    "high":     "⚡",
-    "normal":   "📜",
-}
-
-EVENT_VERB = {
-    "state_created":         "新建",
-    "state_planning":        "规划中",
-    "state_reviewing":       "审核中",
-    "state_executing":       "执行中",
-    "state_done":            "已完成 ✅",
-    "state_failed":          "已失败 ❌",
-    "state_timeout":         "已超时 ⏰",
-    "review_approved":       "门下省准奏 ✅",
-    "review_nogo":           "门下省封驳 🔴",
-    "review_three_strikes":  "三驳失败 ⛔",
-    "review_timeout":        "审核超时 ⏰",
-    "assigned":              "已分配",
-}
 
 
-def _format_notification(zouzhe: dict, event_type: str, extra: str = "") -> str:
-    """Format a notification body for Discord."""
-    pid = zouzhe.get("id", "?")
-    title = zouzhe.get("title", "?")
-    priority = zouzhe.get("priority", "normal")
-    pemoji = PRIORITY_EMOJI.get(priority, "📜")
-    verb = EVENT_VERB.get(event_type, event_type)
 
-    lines = [
-        f"{pemoji} **朝廷通知 · {verb}**",
-        f"",
-        f"📜 `{pid}` — {title}",
-    ]
-
-    assigned = zouzhe.get("assigned_agent")
-    if assigned:
-        lines.append(f"👤 负责人：{assigned}")
-
-    if event_type == "state_done":
-        summary = zouzhe.get("summary") or ""
-        if summary:
-            lines.append(f"✍️ 摘要：{summary}")
-
-    elif event_type in ("state_failed", "state_timeout"):
-        error = zouzhe.get("error") or ""
-        retry = zouzhe.get("retry_count") or 0
-        max_r = zouzhe.get("max_retries") or 2
-        if error:
-            lines.append(f"💥 原因：{error}")
-        lines.append(f"🔁 重试：{retry}/{max_r}")
-
-    elif event_type == "review_three_strikes":
-        revise = zouzhe.get("revise_count") or 0
-        lines.append(f"🔄 封驳轮次：{revise}")
-        lines.append("🏛️ 需要人工决断")
-
-    elif event_type == "review_approved":
-        lines.append("🎉 全票通过，进入执行阶段")
-
-    elif event_type == "review_timeout":
-        if extra:
-            lines.append(f"👥 {extra}")
-
-    if extra and event_type not in ("review_timeout",):
-        lines.append(f"ℹ️ {extra}")
-
-    lines.append(f"⚡ 优先级：{priority}")
-    return "\n".join(lines)
-
-
-def _send_discord_thread(thread_id: str, body: str) -> bool:
-    """Send a message to a Discord Thread via openclaw CLI.
-
-    Correct syntax: themachine message thread reply --channel discord -t THREAD_ID -m MSG
-    """
+def _cli_notify(zouzhe_id: str, body: str):
+    """Send a Discord notification via `chaoting notify`. Non-blocking, never raises."""
     try:
-        result = subprocess.run(
-            [OPENCLAW_CLI, "message", "thread", "reply",
-             "--channel", "discord", "-t", thread_id, "-m", body[:2000]],
-            capture_output=True,
+        subprocess.run(
+            [CHAOTING_CLI, "notify", zouzhe_id, body[:2000]],
             timeout=30,
-        )
-        if result.returncode != 0:
-            log.warning("Discord thread notify failed (rc=%d, thread=%s): %s",
-                        result.returncode, thread_id, result.stderr[:200])
-        return result.returncode == 0
-    except Exception as e:
-        log.warning("Discord thread notify exception (thread=%s): %s", thread_id, e)
-        return False
-
-
-def _send_discord_channel(channel_id: str, body: str) -> bool:
-    """Send a message to a Discord channel (non-thread) via openclaw CLI.
-
-    Used as fallback when a zouzhe has no discord_thread_id.
-    Syntax: themachine message send --channel discord --target CHANNEL_ID --message MSG
-    """
-    try:
-        result = subprocess.run(
-            [OPENCLAW_CLI, "message", "send",
-             "--channel", "discord",
-             "--target", channel_id,
-             "--message", body[:2000]],
             capture_output=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            log.warning("Discord channel notify failed (rc=%d, channel=%s): %s",
-                        result.returncode, channel_id, result.stderr[:200])
-        return result.returncode == 0
-    except Exception as e:
-        log.warning("Discord channel notify exception (channel=%s): %s", channel_id, e)
-        return False
-
-
-def notify_enqueue(db, zouzhe_id: str, event_type: str, body: str,
-                   channel: str = "discord_thread", recipient: str = None,
-                   dedup_extra: str = ""):
-    """Non-blocking: write notification to tongzhi queue.
-
-    Uses INSERT OR IGNORE for deduplication via dedup_key UNIQUE constraint.
-    Must be called within an active transaction; caller is responsible for commit.
-    Exceptions are caught and logged — never raises.
-
-    recipient is the Discord Thread ID. If not provided, looks up discord_thread_id
-    from the zouzhe record. When no thread_id exists, falls back to the main
-    #edict channel (DISCORD_FALLBACK_CHANNEL_ID) with channel='discord_channel'.
-    """
-    # Resolve thread_id from zouzhe if not explicitly provided
-    if recipient is None:
-        try:
-            row = db.execute(
-                "SELECT discord_thread_id FROM zouzhe WHERE id = ?", (zouzhe_id,)
-            ).fetchone()
-            if row and row["discord_thread_id"]:
-                recipient = row["discord_thread_id"]
-        except Exception:
-            pass
-
-    # No thread_id — fall back to main #edict channel instead of silently dropping
-    if not recipient:
-        if DISCORD_FALLBACK_CHANNEL_ID:
-            recipient = DISCORD_FALLBACK_CHANNEL_ID
-            channel = "discord_channel"
-            log.debug("notify_enqueue: no thread_id for %s/%s — falling back to channel %s",
-                      zouzhe_id, event_type, recipient)
-        else:
-            log.warning(
-                "notify_enqueue: DISCORD_FALLBACK_CHANNEL_ID not configured — "
-                "dropping notification for %s/%s (set Environment=DISCORD_FALLBACK_CHANNEL_ID "
-                "in chaoting-dispatcher.service)",
-                zouzhe_id, event_type,
-            )
-            return
-
-    dedup_key = f"{zouzhe_id}:{event_type}:{channel}:{recipient or 'default'}"
-    if dedup_extra:
-        dedup_key = f"{dedup_key}:{dedup_extra}"
-    try:
-        db.execute(
-            "INSERT OR IGNORE INTO tongzhi "
-            "(zouzhe_id, event_type, channel, recipient, body, dedup_key) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (zouzhe_id, event_type, channel, recipient, body, dedup_key),
+            check=False,
         )
     except Exception as e:
-        log.warning("notify_enqueue failed for %s/%s: %s", zouzhe_id, event_type, e)
+        log.warning("_cli_notify failed for %s: %s", zouzhe_id, e)
 
 
-def notify_worker():
-    """Poll tongzhi for pending notifications and send them. Called from main loop.
-
-    All notifications are sent via _send_discord_thread().
-    Entries without a valid recipient (thread_id) are skipped and marked 'skipped'.
-    """
-    db = get_db()
-    try:
-        rows = db.execute(
-            "SELECT * FROM tongzhi WHERE state = 'pending' AND retry_count < max_retries "
-            "ORDER BY created_at ASC LIMIT 20"
-        ).fetchall()
-
-        for row in rows:
-            success = False
-            try:
-                recipient = row["recipient"]
-                ch = row["channel"] or "discord_thread"
-                if not recipient:
-                    # No recipient — mark skipped, not an error
-                    log.debug("No recipient for tongzhi#%d — skipping", row["id"])
-                    db.execute(
-                        "UPDATE tongzhi SET state='skipped', "
-                        "updated_at=strftime('%Y-%m-%dT%H:%M:%S','now') WHERE id=?",
-                        (row["id"],),
-                    )
-                    db.commit()
-                    continue
-                if ch == "discord_channel":
-                    success = _send_discord_channel(recipient, row["body"])
-                elif ch == "internal":
-                    # dedup tombstone — mark sent immediately, no actual send
-                    success = True
-                else:
-                    # default: discord_thread
-                    success = _send_discord_thread(recipient, row["body"])
-            except Exception as e:
-                log.warning("notify_worker send error for tongzhi#%d: %s", row["id"], e)
-
-            if success:
-                db.execute(
-                    "UPDATE tongzhi SET state='sent', "
-                    "sent_at=strftime('%Y-%m-%dT%H:%M:%S','now'), "
-                    "updated_at=strftime('%Y-%m-%dT%H:%M:%S','now') WHERE id=?",
-                    (row["id"],),
-                )
-                # Update last_thread_activity on the zouzhe record
-                try:
-                    db.execute(
-                        "UPDATE zouzhe SET last_thread_activity = strftime('%Y-%m-%dT%H:%M:%S','now') "
-                        "WHERE id = ?", (row["zouzhe_id"],)
-                    )
-                except Exception:
-                    pass  # Column might not exist in older DBs; non-fatal
-                log.info("Notification sent: tongzhi#%d %s/%s",
-                         row["id"], row["zouzhe_id"], row["event_type"])
-            else:
-                new_count = (row["retry_count"] or 0) + 1
-                new_state = "failed" if new_count >= (row["max_retries"] or 3) else "pending"
-                db.execute(
-                    "UPDATE tongzhi SET retry_count=?, state=?, "
-                    "updated_at=strftime('%Y-%m-%dT%H:%M:%S','now') WHERE id=?",
-                    (new_count, new_state, row["id"]),
-                )
-                if new_state == "failed":
-                    log.warning("Notification permanently failed: tongzhi#%d %s/%s",
-                                row["id"], row["zouzhe_id"], row["event_type"])
-            db.commit()
-
-    except Exception as e:
-        log.warning("notify_worker error: %s", e)
-    finally:
-        db.close()
 
 
 def _check_new_done_failed(db):
-    """Detect zouzhe in done/failed/timeout that lack notifications; enqueue them.
+    """Notify silijian about newly done/failed/timeout zouzhe.
 
-    Idempotent — dedup_key UNIQUE constraint prevents duplicate entries.
-    Covers state changes made by CLI commands (cmd_done, cmd_fail) outside dispatcher.
-    Also notifies silijian once per completion (dedup persisted to tongzhi).
+    Uses liuzhuan to dedup: if a 'silijian_notify' action already exists for this
+    zouzhe, skip it. CLI handles Discord notifications directly.
     """
-    for target_state in ("done", "failed", "timeout"):
-        event_type = f"state_{target_state}"
+    for target_state in ('done', 'failed', 'timeout'):
         rows = db.execute(
             "SELECT z.* FROM zouzhe z "
             "WHERE z.state = ? "
             "AND NOT EXISTS ("
-            "  SELECT 1 FROM tongzhi t "
-            "  WHERE t.zouzhe_id = z.id AND t.event_type = ?"
+            "  SELECT 1 FROM liuzhuan l "
+            "  WHERE l.zouzhe_id = z.id AND l.action = 'silijian_notify' "
+            "  AND l.remark = ?"
             ")",
-            (target_state, event_type),
+            (target_state, target_state),
         ).fetchall()
         for row in rows:
-            body = _format_notification(dict(row), event_type)
-            notify_enqueue(db, row["id"], event_type, body)
-            # Always insert a state_done/failed/timeout tombstone regardless of discord_thread_id.
-            # notify_enqueue skips insertion when thread_id is absent, leaving the row perpetually
-            # in the query result and causing repeated processing on every restart.
-            _tongzhi_dedup_insert(db, row["id"], event_type)  # e.g. state_done, state_failed
+            zid = row["id"]
+            title = row["title"]
+            agent = row["assigned_agent"] or "?"
+            if target_state == "done":
+                summary = (row["summary"] or "(无)")[:300]
+                msg = f"✅ 奏折已完成\n\n奏折：{zid}\n标题：{title}\n执行者：{agent}\n摘要：{summary}"
+            else:
+                kind = "超时" if target_state == "timeout" else "失败"
+                error = (row["error"] or "(未说明)")[:300]
+                msg = f"❌ 奏折{kind}\n\n奏折：{zid}\n标题：{title}\n执行者：{agent}\n原因：{error}"
+            try:
+                notify_silijian(dict(row), msg)
+                db.execute(
+                    "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+                    "VALUES (?, 'dispatcher', 'silijian', 'silijian_notify', ?)",
+                    (row['id'], target_state),
+                )
+                db.commit()
+            except Exception as e:
+                log.warning('notify_silijian failed for %s/%s: %s', row['id'], target_state, e)
 
-            _event_label = {"done": "COMPLETED", "failed": "FAILED", "timeout": "TIMEOUT"}.get(target_state, target_state.upper())
-
-            # --- Audit log dedup (DB-persistent) ---
-            _audit_key = (row["id"], _event_label)
-            _audit_dedup_etype = f"audit_log_{_event_label}"
-            if _audit_key not in _audit_logged:
-                # Double-check DB for cross-restart safety
-                existing = db.execute(
-                    "SELECT 1 FROM tongzhi WHERE zouzhe_id=? AND event_type=?",
-                    (row["id"], _audit_dedup_etype),
-                ).fetchone()
-                if not existing:
-                    if target_state == "done":
-                        _content = f"OUTPUT:\n{(row['output'] or '(无)')[:1000]}\n\nSUMMARY:\n{row['summary'] or '(无)'}"
-                        _headline = f"✅ 执行完成 — {row['assigned_agent'] or '?'}"
-                    else:
-                        _content = f"ERROR:\n{row['error'] or '(无)'}\n\nRETRY: {row['retry_count']}/{row['max_retries']}"
-                        _headline = f"❌ 执行失败/超时 — {row['assigned_agent'] or '?'}"
-                    zouzhe_log(row["id"], row["assigned_agent"] or "dispatcher",
-                               _event_label,
-                               _headline,
-                               content=_content,
-                               actor=row["assigned_agent"] or "unknown")
-                    _tongzhi_dedup_insert(db, row["id"], _audit_dedup_etype)
-                _audit_logged.add(_audit_key)  # hot-cache regardless
-
-            # --- Notify silijian (DB-persistent dedup) ---
-            _silijian_label = f"SILIJIAN_{_event_label}"
-            _silijian_key = (row["id"], _silijian_label)
-            _silijian_dedup_etype = f"silijian_notify_{target_state}"
-            if _silijian_key not in _audit_logged:
-                # Double-check DB for cross-restart safety
-                existing_si = db.execute(
-                    "SELECT 1 FROM tongzhi WHERE zouzhe_id=? AND event_type=?",
-                    (row["id"], _silijian_dedup_etype),
-                ).fetchone()
-                if not existing_si:
-                    log.info("Triggering silijian notify for %s/%s", row["id"], target_state)
-                    try:
-                        thread_id = row["discord_thread_id"] or "(无 Thread)"
-                        if target_state == "done":
-                            _si_msg = (
-                                f"✅ 奏折已完成\n\n"
-                                f"奏折：{row['id']}\n"
-                                f"标题：{row['title']}\n"
-                                f"执行者：{row['assigned_agent'] or '?'}\n"
-                                f"摘要：{(row['summary'] or '(无)')[:300]}\n"
-                                f"Thread ID：{thread_id}\n\n"
-                                f"请在对应 Thread 中通知皇上任务已完成。"
-                            )
-                        else:
-                            _si_msg = (
-                                f"❌ 奏折{'超时' if target_state == 'timeout' else '失败'}\n\n"
-                                f"奏折：{row['id']}\n"
-                                f"标题：{row['title']}\n"
-                                f"执行者：{row['assigned_agent'] or '?'}\n"
-                                f"原因：{(row['error'] or '(未说明)')[:300]}\n"
-                                f"Thread ID：{thread_id}\n\n"
-                                f"请在对应 Thread 中通知皇上并处理。"
-                            )
-                        notify_silijian(dict(row), _si_msg.split("\n\n", 1)[1] if "\n\n" in _si_msg else _si_msg)
-                        # Persist dedup tombstone only after successful call
-                        _tongzhi_dedup_insert(db, row["id"], _silijian_dedup_etype)
-                    except Exception as _si_e:
-                        log.warning("notify_silijian failed for %s/%s: %s", row["id"], target_state, _si_e)
-                _audit_logged.add(_silijian_key)  # hot-cache regardless
-    db.commit()
-
-
-def notify_silijian(zouzhe, message: str):
-    """Notify silijian (司礼监) about events requiring attention."""
-    msg = f"⚠️ 司礼监通知\n\n奏折: {zouzhe['id']}\n{message}"
-    log.info("Notifying silijian about %s", zouzhe['id'])
-    try:
-        result = subprocess.run(
-            [OPENCLAW_CLI, "agent", "--agent", "silijian", "-m", msg],
-            capture_output=True,
-            timeout=180,
-        )
-        if result.returncode != 0:
-            log.warning("notify_silijian rc=%d for %s: %s",
-                        result.returncode, zouzhe['id'],
-                        result.stderr[:200] if result.stderr else "")
-        else:
-            log.info("notify_silijian sent for %s", zouzhe['id'])
-    except Exception as e:
-        log.error("Failed to notify silijian for %s: %s", zouzhe["id"], e)
-
-
-def _preload_audit_logged():
-    """Pre-populate _audit_logged from tongzhi at startup to prevent post-restart duplicates.
-
-    Loads all dedup_keys with event_type starting with 'silijian_notify' or 'audit_log'
-    into the in-memory _audit_logged set, so that done/failed zouzhe already processed
-    are not re-notified or re-logged on restart.
-    """
-    global _audit_logged
-    try:
-        db = get_db()
-        rows = db.execute(
-            "SELECT zouzhe_id, event_type FROM tongzhi "
-            "WHERE event_type LIKE 'silijian_notify_%' OR event_type LIKE 'audit_log_%'"
-        ).fetchall()
-        db.close()
-        for row in rows:
-            zid = row["zouzhe_id"]
-            etype = row["event_type"]
-            if etype.startswith("silijian_notify_"):
-                # e.g. silijian_notify_done → key = (zid, "SILIJIAN_COMPLETED")
-                state = etype[len("silijian_notify_"):]
-                label = {"done": "COMPLETED", "failed": "FAILED", "timeout": "TIMEOUT"}.get(state, state.upper())
-                _audit_logged.add((zid, f"SILIJIAN_{label}"))
-            elif etype.startswith("audit_log_"):
-                # e.g. audit_log_COMPLETED → key = (zid, "COMPLETED")
-                label = etype[len("audit_log_"):]
-                _audit_logged.add((zid, label))
-        log.info("Preloaded %d dedup keys into _audit_logged from tongzhi", len(rows))
-    except Exception as e:
-        log.warning("_preload_audit_logged failed: %s", e)
-
-
-def _tongzhi_dedup_insert(db, zouzhe_id: str, event_type: str):
-    """Insert a dedup tombstone into tongzhi (no channel, no body) for persistence.
-
-    Uses INSERT OR IGNORE — safe to call multiple times.
-    event_type examples: 'silijian_notify_done', 'audit_log_COMPLETED'
-    """
-    dedup_key = f"{zouzhe_id}:{event_type}:dedup"
-    try:
-        db.execute(
-            "INSERT OR IGNORE INTO tongzhi "
-            "(zouzhe_id, event_type, channel, recipient, body, state, dedup_key) "
-            "VALUES (?, ?, 'internal', 'dedup', '', 'sent', ?)",
-            (zouzhe_id, event_type, dedup_key),
-        )
-    except Exception as e:
-        log.warning("_tongzhi_dedup_insert failed for %s/%s: %s", zouzhe_id, event_type, e)
 
 
 def format_review_message(zouzhe, jishi_id: str, role_desc: str) -> str:
@@ -842,18 +478,6 @@ def dispatch_reviewers(db, zouzhe):
                content=_format_plan_content(zouzhe["plan"]))
 
 
-def _notify_state_change(zouzhe_id: str, event_type: str, extra: str = ""):
-    """Helper: fetch zouzhe, format notification, enqueue in a short-lived DB connection."""
-    try:
-        db = get_db()
-        row = db.execute("SELECT * FROM zouzhe WHERE id = ?", (zouzhe_id,)).fetchone()
-        if row:
-            body = _format_notification(dict(row), event_type, extra)
-            notify_enqueue(db, zouzhe_id, event_type, body)
-            db.commit()
-        db.close()
-    except Exception as e:
-        log.warning("_notify_state_change failed for %s/%s: %s", zouzhe_id, event_type, e)
 
 
 def check_votes(db, zouzhe):
@@ -902,8 +526,7 @@ def check_votes(db, zouzhe):
                    "reviewing -> executing",
                    actor="menxia", remark="门下省准奏，全票通过")
         log.info("门下省准奏 %s，全票通过", zouzhe["id"])
-        # 通知：审核通过
-        _notify_state_change(zouzhe["id"], "review_approved")
+        _cli_notify(zouzhe["id"], f"✅ 门下省准奏\n\n📜 `{zouzhe['id']}` — {zouzhe['title']}\n🎉 全票通过，进入执行阶段")
     else:
         # Has nogo votes
         if (zouzhe["revise_count"] or 0) >= 2:
@@ -936,8 +559,7 @@ def check_votes(db, zouzhe):
                        actor="menxia", remark="三驳失败，呈御前裁决")
             log.warning("三驳失败 %s，呈御前裁决", zouzhe["id"])
             notify_silijian(dict(zouzhe), "奏折已被封驳3次，请人工决断")
-            # 通知：三驳失败
-            _notify_state_change(zouzhe["id"], "review_three_strikes")
+            _cli_notify(zouzhe["id"], f"⛔ 三驳失败\n\n📜 `{zouzhe['id']}` — {zouzhe['title']}\n🏛️ 需要人工决断")
         else:
             # Archive old plan + votes, enter revising
             archive_entry = {
@@ -1021,8 +643,7 @@ def handle_review_timeout(db, zouzhe):
         db.commit()
         log.warning("军国大事审核超时 %s，标记失败", zouzhe["id"])
         notify_silijian(dict(zouzhe), f"军国大事审核超时，{len(missing)} 名给事中未投票")
-        _notify_state_change(zouzhe["id"], "review_timeout",
-                             extra=f"军国大事超时，{len(missing)} 名给事中未投票")
+        _cli_notify(zouzhe["id"], f"⏰ 审核超时\n\n📜 `{zouzhe['id']}` — {zouzhe['title']}\n👥 军国大事超时，{len(missing)} 名给事中未投票")
     else:
         # Normal: auto-insert go votes for missing, notify silijian
         for jishi_id in missing:
@@ -1039,8 +660,7 @@ def handle_review_timeout(db, zouzhe):
         db.commit()
         log.info("审核超时 %s，%d 名给事中默认准奏", zouzhe["id"], len(missing))
         notify_silijian(dict(zouzhe), f"审核超时，{len(missing)} 名给事中默认准奏")
-        _notify_state_change(zouzhe["id"], "review_timeout",
-                             extra=f"{len(missing)} 名给事中默认准奏")
+        _cli_notify(zouzhe["id"], f"⏰ 审核超时\n\n📜 `{zouzhe['id']}` — {zouzhe['title']}\n👥 {len(missing)} 名给事中默认准奏")
         # Next poll cycle check_votes will see all votes complete
 
 
@@ -1153,35 +773,6 @@ def poll_and_dispatch():
         db.close()
 
 
-def check_thread_activity_warning():
-    """Warn in log when active zouzhe with discord_thread_id have no Thread activity for 15+ min.
-
-    This detects cases where the CLI Thread push failed silently and the dispatcher's
-    tongzhi fallback also hasn't fired yet. Called every 5 minutes from main loop.
-    """
-    db = get_db()
-    try:
-        rows = db.execute("""
-            SELECT id, title, state, assigned_agent, discord_thread_id,
-                   last_thread_activity, updated_at
-            FROM zouzhe
-            WHERE state IN ('planning', 'reviewing', 'executing')
-              AND discord_thread_id IS NOT NULL
-              AND (
-                last_thread_activity IS NULL
-                OR (julianday('now') - julianday(last_thread_activity)) * 1440 > 15
-              )
-        """).fetchall()
-        for row in rows:
-            last = row["last_thread_activity"] or "从未发送"
-            log.warning(
-                "Thread 活跃度告警 %s [%s] 超过 15 分钟无 Thread 消息 | assigned=%s | last_activity=%s",
-                row["id"], row["state"], row["assigned_agent"] or "?", last,
-            )
-    except Exception as e:
-        log.warning("check_thread_activity_warning error: %s", e)
-    finally:
-        db.close()
 
 
 def check_timeouts():
@@ -1235,8 +826,7 @@ def check_timeouts():
                                    f"RETRIES: {row['max_retries']}/{row['max_retries']} exhausted",
                            actor="dispatcher")
                 log.warning("Timeout %s — max retries exhausted", zid)
-                # 通知：执行超时
-                _notify_state_change(zid, "state_timeout")
+                _cli_notify(zid, f"⏰ 执行超时\n\n📜 `{zid}` — 重试次数耗尽\n👤 {row['assigned_agent'] or '?'}")
 
         # Handle reviewing state timeouts
         reviewing_rows = db.execute("""
@@ -1292,17 +882,14 @@ def main():
         return
 
     recover_orphans()
-    _preload_audit_logged()   # Pre-fill _audit_logged from DB to prevent post-restart duplicates
 
     last_timeout_check = 0.0
     last_archive_check = 0.0
-    last_activity_check = 0.0
     log.info("Entering main loop (poll=%ds, timeout_check=%ds)", POLL_INTERVAL, TIMEOUT_CHECK_INTERVAL)
 
     while True:
         try:
             poll_and_dispatch()
-            notify_worker()   # 发送队列中的待发通知
 
             now = time.time()
             if now - last_timeout_check >= TIMEOUT_CHECK_INTERVAL:
@@ -1313,9 +900,6 @@ def main():
                 archive_old_logs()
                 last_archive_check = now
 
-            if now - last_activity_check >= 300:   # 每5分钟检查 Thread 活跃度
-                check_thread_activity_warning()
-                last_activity_check = now
         except Exception:
             log.exception("Error in main loop")
 
