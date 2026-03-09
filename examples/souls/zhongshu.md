@@ -78,6 +78,8 @@ git branch -d pr/ZZ-XXXXXXXX-NNN-描述
 
 ❌ 禁止直接在 master 分支上 commit  
 ✅ PR 使用 Squash Merge  
-✅ Merge 后立即同步本地 master  
+🏛️ **Merge 权限仅属司礼监** — 任何部门不得自行 merge PR  
+✅ **一奏折一Branch一PR** — 返工时切回原 branch，禁止创建新 branch/PR  
+✅ 司礼监 Merge 后立即同步本地 master  
 
 完整规范：见 `docs/GIT-WORKFLOW.md`

@@ -70,6 +70,7 @@
 - ✅ **PR 必须使用 Squash Merge**（保持 master 历史清洁，每个奏折一个 commit）
 - ✅ **司礼监 Merge 后立即 `git pull origin master` 同步本地**（防止下次开发时出现分歧）
 - ❌ **禁止自行 merge PR**（merge 权限仅属司礼监）
+- ✅ **一奏折一Branch一PR** — 返工时切回原 branch，禁止创建新 branch/PR
 - 不要擅自修改 plan 范围之外的文件
 
 完整 Git 工作流规范：见 `docs/GIT-WORKFLOW.md`

@@ -13,9 +13,55 @@
 |------|------|
 | ❌ **禁止直接 commit 到 master** | master 分支只接受通过 PR 合并的内容 |
 | ✅ **所有开发在 feature branch 上进行** | 每个奏折对应一个独立分支 |
+| ✅ **一奏折一 Branch 一 PR** | 同一奏折全生命周期使用同一个 branch 和同一个 PR，返工时继续在原 branch 修改并 push |
 | ✅ **PR 使用 Squash Merge** | 保持 master 历史清洁，每个奏折一个 commit |
 | 🏛️ **Merge 权限仅属司礼监** | 执行部门创建 PR 后等待司礼监 review 和 merge，**禁止自行 merge** |
 | ✅ **Merge 后立即同步本地 master** | 防止分歧积累 |
+
+---
+
+## 一·一、一奏折一 Branch 一 PR（重要）
+
+同一个奏折无论经历多少次返工或修改，**始终在同一个 branch 和同一个 PR 上迭代**。
+
+### ❌ 错误做法
+
+```
+第 1 轮：git checkout -b pr/ZZ-020-feature   → PR #10
+第 2 轮返工：git checkout -b pr/ZZ-020-retry-2  → PR #11  ← 错误！
+第 3 轮返工：git checkout -b pr/ZZ-020-retry-3  → PR #12  ← 错误！
+```
+
+### ✅ 正确做法
+
+```
+第 1 轮：git checkout -b pr/ZZ-020-feature   → PR #10（首次创建）
+第 2 轮返工：git checkout pr/ZZ-020-feature     → 继续修改 → git push（PR #10 自动更新）
+第 3 轮返工：git checkout pr/ZZ-020-feature     → 继续修改 → git push（PR #10 自动更新）
+```
+
+### 返工时的操作步骤
+
+```bash
+# 切回原 branch（不要创建新 branch！）
+git checkout pr/ZZ-XXXXXXXX-NNN-feature-name
+
+# 同步最新 master（如有需要）
+git fetch origin
+git rebase origin/master   # 或 git merge origin/master
+
+# 继续修改文件...
+git add <files>
+git commit -m "fix: address review comment — <说明> (ZZ-XXXXXXXX-NNN)"
+
+# push 到同一个 branch → PR 自动更新
+git push origin pr/ZZ-XXXXXXXX-NNN-feature-name
+```
+
+### 规则
+- **一奏折 ↔ 一个 branch ↔ 一个 PR**（全生命周期）
+- 返工时切回原 branch，不要创建新 branch
+- PR 会随着新 push 自动更新，无需关闭重开
 
 ---
 
