@@ -86,6 +86,26 @@ CREATE TABLE IF NOT EXISTS toupiao (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_toupiao_unique ON toupiao(zouzhe_id, round, jishi_id);
 CREATE INDEX IF NOT EXISTS idx_toupiao_zouzhe ON toupiao(zouzhe_id);
 
+CREATE TABLE IF NOT EXISTS tongzhi (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    zouzhe_id    TEXT NOT NULL,
+    event_type   TEXT NOT NULL,
+    channel      TEXT NOT NULL DEFAULT 'discord_channel',
+    recipient    TEXT,
+    body         TEXT NOT NULL,
+    state        TEXT NOT NULL DEFAULT 'pending',
+    retry_count  INTEGER NOT NULL DEFAULT 0,
+    max_retries  INTEGER NOT NULL DEFAULT 3,
+    error        TEXT,
+    dedup_key    TEXT UNIQUE,
+    created_at   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+    sent_at      TEXT,
+    updated_at   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_tongzhi_state ON tongzhi(state, created_at);
+CREATE INDEX IF NOT EXISTS idx_tongzhi_zouzhe ON tongzhi(zouzhe_id);
+
 CREATE INDEX IF NOT EXISTS idx_zouzhe_state ON zouzhe(state);
 CREATE INDEX IF NOT EXISTS idx_liuzhuan_zouzhe ON liuzhuan(zouzhe_id);
 CREATE INDEX IF NOT EXISTS idx_zoubao_zouzhe ON zoubao(zouzhe_id);
@@ -114,6 +134,28 @@ def migrate_db(db):
         if col_name not in existing:
             db.execute(f"ALTER TABLE zouzhe ADD COLUMN {col_name} {col_def}")
             print(f"  Added column zouzhe.{col_name}")
+
+    # Ensure tongzhi table exists (for existing DBs created before this migration)
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS tongzhi (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            zouzhe_id    TEXT NOT NULL,
+            event_type   TEXT NOT NULL,
+            channel      TEXT NOT NULL DEFAULT 'discord_channel',
+            recipient    TEXT,
+            body         TEXT NOT NULL,
+            state        TEXT NOT NULL DEFAULT 'pending',
+            retry_count  INTEGER NOT NULL DEFAULT 0,
+            max_retries  INTEGER NOT NULL DEFAULT 3,
+            error        TEXT,
+            dedup_key    TEXT UNIQUE,
+            created_at   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+            sent_at      TEXT,
+            updated_at   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_tongzhi_state ON tongzhi(state, created_at);
+        CREATE INDEX IF NOT EXISTS idx_tongzhi_zouzhe ON tongzhi(zouzhe_id);
+    """)
 
 
 def init_db():

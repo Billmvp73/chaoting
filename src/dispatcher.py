@@ -8,10 +8,17 @@ import sqlite3
 import subprocess
 import threading
 import time
+import urllib.request
 
 CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
 CHAOTING_CLI = os.path.join(CHAOTING_DIR, "src", "chaoting") if os.path.isfile(os.path.join(CHAOTING_DIR, "src", "chaoting")) else os.path.join(CHAOTING_DIR, "chaoting")
+
+# Notification config — set via environment variables
+# DISCORD_NOTIFY_WEBHOOK: Discord webhook URL (preferred)
+# DISCORD_NOTIFY_CHANNEL: Discord channel ID (uses openclaw CLI, fallback)
+DISCORD_NOTIFY_WEBHOOK = os.environ.get("DISCORD_NOTIFY_WEBHOOK", "")
+DISCORD_NOTIFY_CHANNEL = os.environ.get("DISCORD_NOTIFY_CHANNEL", "")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -116,6 +123,229 @@ def dispatch_agent(agent_id: str, zouzhe_id: str, timeout_sec: int, msg: str = N
     t = threading.Thread(target=_run, daemon=True)
     t.start()
     log.info("Dispatched %s to agent %s (timeout=%ds)", zouzhe_id, agent_id, timeout_sec)
+
+
+# ──────────────────────────────────────────────────────
+# 通知系统 — 第一阶段：Discord 频道通知
+# ──────────────────────────────────────────────────────
+
+PRIORITY_EMOJI = {
+    "urgent":   "🚨",
+    "critical": "🚨",
+    "high":     "⚡",
+    "normal":   "📜",
+}
+
+EVENT_VERB = {
+    "state_created":         "新建",
+    "state_planning":        "规划中",
+    "state_reviewing":       "审核中",
+    "state_executing":       "执行中",
+    "state_done":            "已完成 ✅",
+    "state_failed":          "已失败 ❌",
+    "state_timeout":         "已超时 ⏰",
+    "review_approved":       "门下省准奏 ✅",
+    "review_nogo":           "门下省封驳 🔴",
+    "review_three_strikes":  "三驳失败 ⛔",
+    "review_timeout":        "审核超时 ⏰",
+    "assigned":              "已分配",
+}
+
+
+def _format_notification(zouzhe: dict, event_type: str, extra: str = "") -> str:
+    """Format a notification body for Discord."""
+    pid = zouzhe.get("id", "?")
+    title = zouzhe.get("title", "?")
+    priority = zouzhe.get("priority", "normal")
+    pemoji = PRIORITY_EMOJI.get(priority, "📜")
+    verb = EVENT_VERB.get(event_type, event_type)
+
+    lines = [
+        f"{pemoji} **朝廷通知 · {verb}**",
+        f"",
+        f"📜 `{pid}` — {title}",
+    ]
+
+    assigned = zouzhe.get("assigned_agent")
+    if assigned:
+        lines.append(f"👤 负责人：{assigned}")
+
+    if event_type == "state_done":
+        summary = zouzhe.get("summary") or ""
+        if summary:
+            lines.append(f"✍️ 摘要：{summary}")
+
+    elif event_type in ("state_failed", "state_timeout"):
+        error = zouzhe.get("error") or ""
+        retry = zouzhe.get("retry_count") or 0
+        max_r = zouzhe.get("max_retries") or 2
+        if error:
+            lines.append(f"💥 原因：{error}")
+        lines.append(f"🔁 重试：{retry}/{max_r}")
+
+    elif event_type == "review_three_strikes":
+        revise = zouzhe.get("revise_count") or 0
+        lines.append(f"🔄 封驳轮次：{revise}")
+        lines.append("🏛️ 需要人工决断")
+
+    elif event_type == "review_approved":
+        lines.append("🎉 全票通过，进入执行阶段")
+
+    elif event_type == "review_timeout":
+        if extra:
+            lines.append(f"👥 {extra}")
+
+    if extra and event_type not in ("review_timeout",):
+        lines.append(f"ℹ️ {extra}")
+
+    lines.append(f"⚡ 优先级：{priority}")
+    return "\n".join(lines)
+
+
+def _send_discord_channel(recipient: str, body: str) -> bool:
+    """Send a message to a Discord channel.
+
+    Tries in order:
+    1. DISCORD_NOTIFY_WEBHOOK env var (global webhook URL)
+    2. recipient as a webhook URL (starts with http)
+    3. openclaw CLI with recipient or DISCORD_NOTIFY_CHANNEL as channel ID
+    """
+    webhook = DISCORD_NOTIFY_WEBHOOK or (recipient if recipient and recipient.startswith("http") else "")
+    if webhook:
+        try:
+            payload = json.dumps({"content": body[:2000]}).encode("utf-8")
+            req = urllib.request.Request(
+                webhook,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return resp.status in (200, 204)
+        except Exception as e:
+            log.warning("Discord webhook send failed: %s", e)
+            return False
+
+    # Fallback: openclaw CLI
+    channel_id = recipient or DISCORD_NOTIFY_CHANNEL
+    if not channel_id:
+        log.warning("No Discord channel/webhook configured — notification skipped")
+        return False
+    try:
+        result = subprocess.run(
+            [OPENCLAW_CLI, "message", "--channel", "discord", "--to", channel_id, "-m", body[:2000]],
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            log.warning("Discord notify CLI failed (rc=%d): %s", result.returncode, result.stderr[:200])
+        return result.returncode == 0
+    except Exception as e:
+        log.warning("Discord notify CLI exception: %s", e)
+        return False
+
+
+def notify_enqueue(db, zouzhe_id: str, event_type: str, body: str,
+                   channel: str = "discord_channel", recipient: str = None,
+                   dedup_extra: str = ""):
+    """Non-blocking: write notification to tongzhi queue.
+
+    Uses INSERT OR IGNORE for deduplication via dedup_key UNIQUE constraint.
+    Must be called within an active transaction; caller is responsible for commit.
+    Exceptions are caught and logged — never raises.
+    """
+    dedup_key = f"{zouzhe_id}:{event_type}:{channel}:{recipient or 'default'}"
+    if dedup_extra:
+        dedup_key = f"{dedup_key}:{dedup_extra}"
+    try:
+        db.execute(
+            "INSERT OR IGNORE INTO tongzhi "
+            "(zouzhe_id, event_type, channel, recipient, body, dedup_key) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (zouzhe_id, event_type, channel, recipient, body, dedup_key),
+        )
+    except Exception as e:
+        log.warning("notify_enqueue failed for %s/%s: %s", zouzhe_id, event_type, e)
+
+
+def notify_worker():
+    """Poll tongzhi for pending notifications and send them. Called from main loop."""
+    if not DISCORD_NOTIFY_WEBHOOK and not DISCORD_NOTIFY_CHANNEL:
+        return  # Not configured — skip silently
+
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT * FROM tongzhi WHERE state = 'pending' AND retry_count < max_retries "
+            "ORDER BY created_at ASC LIMIT 20"
+        ).fetchall()
+
+        for row in rows:
+            success = False
+            try:
+                if row["channel"] == "discord_channel":
+                    success = _send_discord_channel(row["recipient"], row["body"])
+                else:
+                    log.debug("Unsupported channel %s — skipping tongzhi#%d", row["channel"], row["id"])
+                    db.execute(
+                        "UPDATE tongzhi SET state='skipped', "
+                        "updated_at=strftime('%Y-%m-%dT%H:%M:%S','now') WHERE id=?",
+                        (row["id"],),
+                    )
+                    db.commit()
+                    continue
+            except Exception as e:
+                log.warning("notify_worker send error for tongzhi#%d: %s", row["id"], e)
+
+            if success:
+                db.execute(
+                    "UPDATE tongzhi SET state='sent', "
+                    "sent_at=strftime('%Y-%m-%dT%H:%M:%S','now'), "
+                    "updated_at=strftime('%Y-%m-%dT%H:%M:%S','now') WHERE id=?",
+                    (row["id"],),
+                )
+                log.info("Notification sent: tongzhi#%d %s/%s",
+                         row["id"], row["zouzhe_id"], row["event_type"])
+            else:
+                new_count = (row["retry_count"] or 0) + 1
+                new_state = "failed" if new_count >= (row["max_retries"] or 3) else "pending"
+                db.execute(
+                    "UPDATE tongzhi SET retry_count=?, state=?, "
+                    "updated_at=strftime('%Y-%m-%dT%H:%M:%S','now') WHERE id=?",
+                    (new_count, new_state, row["id"]),
+                )
+                if new_state == "failed":
+                    log.warning("Notification permanently failed: tongzhi#%d %s/%s",
+                                row["id"], row["zouzhe_id"], row["event_type"])
+            db.commit()
+
+    except Exception as e:
+        log.warning("notify_worker error: %s", e)
+    finally:
+        db.close()
+
+
+def _check_new_done_failed(db):
+    """Detect zouzhe in done/failed/timeout that lack notifications; enqueue them.
+
+    Idempotent — dedup_key UNIQUE constraint prevents duplicate entries.
+    Covers state changes made by CLI commands (cmd_done, cmd_fail) outside dispatcher.
+    """
+    for target_state in ("done", "failed", "timeout"):
+        event_type = f"state_{target_state}"
+        rows = db.execute(
+            "SELECT z.* FROM zouzhe z "
+            "WHERE z.state = ? "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM tongzhi t "
+            "  WHERE t.zouzhe_id = z.id AND t.event_type = ?"
+            ")",
+            (target_state, event_type),
+        ).fetchall()
+        for row in rows:
+            body = _format_notification(dict(row), event_type)
+            notify_enqueue(db, row["id"], event_type, body)
+    db.commit()
 
 
 def notify_silijian(zouzhe, message: str):
@@ -230,6 +460,20 @@ def dispatch_reviewers(db, zouzhe):
     log.info("Dispatched reviewers for %s: %s", zouzhe["id"], jishi_list)
 
 
+def _notify_state_change(zouzhe_id: str, event_type: str, extra: str = ""):
+    """Helper: fetch zouzhe, format notification, enqueue in a short-lived DB connection."""
+    try:
+        db = get_db()
+        row = db.execute("SELECT * FROM zouzhe WHERE id = ?", (zouzhe_id,)).fetchone()
+        if row:
+            body = _format_notification(dict(row), event_type, extra)
+            notify_enqueue(db, zouzhe_id, event_type, body)
+            db.commit()
+        db.close()
+    except Exception as e:
+        log.warning("_notify_state_change failed for %s/%s: %s", zouzhe_id, event_type, e)
+
+
 def check_votes(db, zouzhe):
     """Poll reviewing state, count votes, handle go/nogo/three-strikes."""
     jishi_list = get_review_agents(zouzhe)
@@ -264,6 +508,8 @@ def check_votes(db, zouzhe):
         )
         db.commit()
         log.info("门下省准奏 %s，全票通过", zouzhe["id"])
+        # 通知：审核通过
+        _notify_state_change(zouzhe["id"], "review_approved")
     else:
         # Has nogo votes
         if (zouzhe["revise_count"] or 0) >= 2:
@@ -285,6 +531,8 @@ def check_votes(db, zouzhe):
             db.commit()
             log.warning("三驳失败 %s，呈御前裁决", zouzhe["id"])
             notify_silijian(dict(zouzhe), "奏折已被封驳3次，请人工决断")
+            # 通知：三驳失败
+            _notify_state_change(zouzhe["id"], "review_three_strikes")
         else:
             # Archive old plan + votes, enter revising
             archive_entry = {
@@ -354,6 +602,8 @@ def handle_review_timeout(db, zouzhe):
         db.commit()
         log.warning("军国大事审核超时 %s，标记失败", zouzhe["id"])
         notify_silijian(dict(zouzhe), f"军国大事审核超时，{len(missing)} 名给事中未投票")
+        _notify_state_change(zouzhe["id"], "review_timeout",
+                             extra=f"军国大事超时，{len(missing)} 名给事中未投票")
     else:
         # Normal: auto-insert go votes for missing, notify silijian
         for jishi_id in missing:
@@ -370,6 +620,8 @@ def handle_review_timeout(db, zouzhe):
         db.commit()
         log.info("审核超时 %s，%d 名给事中默认准奏", zouzhe["id"], len(missing))
         notify_silijian(dict(zouzhe), f"审核超时，{len(missing)} 名给事中默认准奏")
+        _notify_state_change(zouzhe["id"], "review_timeout",
+                             extra=f"{len(missing)} 名给事中默认准奏")
         # Next poll cycle check_votes will see all votes complete
 
 
@@ -442,6 +694,9 @@ def poll_and_dispatch():
         ).fetchall()
         for row in reviewing_all:
             check_votes(db, row)
+
+        # 5. Detect done/failed/timeout from CLI commands and enqueue notifications
+        _check_new_done_failed(db)
     finally:
         db.close()
 
@@ -491,6 +746,8 @@ def check_timeouts():
                 )
                 db.commit()
                 log.warning("Timeout %s — max retries exhausted", zid)
+                # 通知：执行超时
+                _notify_state_change(zid, "state_timeout")
 
         # Handle reviewing state timeouts
         reviewing_rows = db.execute("""
@@ -553,6 +810,7 @@ def main():
     while True:
         try:
             poll_and_dispatch()
+            notify_worker()   # 发送队列中的待发通知
 
             now = time.time()
             if now - last_timeout_check >= TIMEOUT_CHECK_INTERVAL:
