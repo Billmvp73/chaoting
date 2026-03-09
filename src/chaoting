@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import sys
+from datetime import datetime, timezone
 
 CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
@@ -22,6 +23,194 @@ def out(data, ok=True):
     code = 0 if ok else 1
     print(json.dumps(data, ensure_ascii=False))
     sys.exit(code)
+
+
+def cmd_new(args):
+    if len(args) < 1:
+        out({"ok": False, "error": "usage: chaoting new '<title>' ['<description>'] [--review N] [--priority normal|critical] [--timeout 600]"}, ok=False)
+
+    title = args[0]
+
+    # description is optional positional arg (before any -- flags)
+    description = ""
+    idx_start = 1
+    if len(args) > 1 and not args[1].startswith("--"):
+        description = args[1]
+        idx_start = 2
+
+    # Parse optional flags
+    review_required = 2  # default: tech + risk review
+    priority = "normal"
+    timeout_sec = 600
+
+    i = idx_start
+    while i < len(args):
+        if args[i] == "--review" and i + 1 < len(args):
+            try:
+                review_required = int(args[i + 1])
+            except ValueError:
+                out({"ok": False, "error": "--review must be an integer (0-3)"}, ok=False)
+            i += 2
+        elif args[i] == "--priority" and i + 1 < len(args):
+            priority = args[i + 1]
+            i += 2
+        elif args[i] == "--timeout" and i + 1 < len(args):
+            try:
+                timeout_sec = int(args[i + 1])
+            except ValueError:
+                out({"ok": False, "error": "--timeout must be an integer"}, ok=False)
+            i += 2
+        else:
+            i += 1
+
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    prefix = f"ZZ-{today}-"
+
+    db = get_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+
+        # Concurrency-safe ID generation via MAX in transaction
+        row = db.execute(
+            "SELECT MAX(id) AS max_id FROM zouzhe WHERE id LIKE ?",
+            (f"{prefix}%",),
+        ).fetchone()
+
+        if row["max_id"]:
+            last_num = int(row["max_id"][-3:])
+            next_num = last_num + 1
+        else:
+            next_num = 1
+
+        new_id = f"{prefix}{next_num:03d}"
+
+        db.execute(
+            "INSERT INTO zouzhe "
+            "(id, title, description, state, priority, timeout_sec, review_required, revise_count) "
+            "VALUES (?, ?, ?, 'created', ?, ?, ?, 0)",
+            (new_id, title, description, priority, timeout_sec, review_required),
+        )
+
+        db.execute("COMMIT")
+        db.close()
+        out({"ok": True, "id": new_id, "state": "created"})
+    except Exception as e:
+        try:
+            db.execute("ROLLBACK")
+        except Exception:
+            pass
+        db.close()
+        out({"ok": False, "error": str(e)}, ok=False)
+
+
+def cmd_list(args):
+    state_filter = None
+    limit = 20
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--state" and i + 1 < len(args):
+            state_filter = args[i + 1]
+            i += 2
+        elif args[i] == "--limit" and i + 1 < len(args):
+            try:
+                limit = int(args[i + 1])
+            except ValueError:
+                out({"ok": False, "error": "--limit must be an integer"}, ok=False)
+            i += 2
+        else:
+            i += 1
+
+    db = get_db()
+    if state_filter:
+        rows = db.execute(
+            "SELECT id, title, state, assigned_agent, created_at FROM zouzhe "
+            "WHERE state = ? ORDER BY created_at DESC LIMIT ?",
+            (state_filter, limit),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT id, title, state, assigned_agent, created_at FROM zouzhe "
+            "ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    result = [dict(r) for r in rows]
+    db.close()
+    out({"ok": True, "zouzhe": result, "count": len(result)})
+
+
+def cmd_status(args):
+    if len(args) < 1:
+        out({"ok": False, "error": "usage: chaoting status <zouzhe_id>"}, ok=False)
+
+    zid = args[0]
+    db = get_db()
+
+    row = db.execute("SELECT * FROM zouzhe WHERE id = ?", (zid,)).fetchone()
+    if not row:
+        db.close()
+        out({"ok": False, "error": f"zouzhe {zid} not found"}, ok=False)
+
+    zouzhe = dict(row)
+    if zouzhe.get("plan"):
+        try:
+            zouzhe["plan"] = json.loads(zouzhe["plan"])
+        except Exception:
+            pass
+
+    toupiao = [
+        {
+            "id": r["id"],
+            "round": r["round"],
+            "jishi_id": r["jishi_id"],
+            "agent_id": r["agent_id"],
+            "vote": r["vote"],
+            "reason": r["reason"],
+            "timestamp": r["timestamp"],
+        }
+        for r in db.execute(
+            "SELECT * FROM toupiao WHERE zouzhe_id = ? ORDER BY round, id",
+            (zid,),
+        ).fetchall()
+    ]
+
+    liuzhuan = [
+        {
+            "id": r["id"],
+            "from_role": r["from_role"],
+            "to_role": r["to_role"],
+            "action": r["action"],
+            "remark": r["remark"],
+            "timestamp": r["timestamp"],
+        }
+        for r in db.execute(
+            "SELECT * FROM liuzhuan WHERE zouzhe_id = ? ORDER BY id",
+            (zid,),
+        ).fetchall()
+    ]
+
+    zoubao = [
+        {
+            "id": r["id"],
+            "agent_id": r["agent_id"],
+            "text": r["text"],
+            "timestamp": r["timestamp"],
+        }
+        for r in db.execute(
+            "SELECT * FROM zoubao WHERE zouzhe_id = ? ORDER BY id",
+            (zid,),
+        ).fetchall()
+    ]
+
+    db.close()
+    out({
+        "ok": True,
+        "zouzhe": zouzhe,
+        "toupiao": toupiao,
+        "liuzhuan": liuzhuan,
+        "zoubao": zoubao,
+    })
 
 
 def cmd_pull(args):
@@ -322,6 +511,9 @@ def cmd_vote(args):
 
 
 COMMANDS = {
+    "new": cmd_new,
+    "list": cmd_list,
+    "status": cmd_status,
     "pull": cmd_pull,
     "plan": cmd_plan,
     "progress": cmd_progress,
