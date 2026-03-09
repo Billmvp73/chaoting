@@ -513,6 +513,7 @@ def _check_new_done_failed(db):
 
     Idempotent — dedup_key UNIQUE constraint prevents duplicate entries.
     Covers state changes made by CLI commands (cmd_done, cmd_fail) outside dispatcher.
+    Also notifies silijian once per completion (dedup via _audit_logged).
     """
     for target_state in ("done", "failed", "timeout"):
         event_type = f"state_{target_state}"
@@ -544,6 +545,36 @@ def _check_new_done_failed(db):
                            content=_content,
                            actor=row["assigned_agent"] or "unknown")
                 _audit_logged.add(_audit_key)
+
+            # Notify silijian once per completion — dedup via _audit_logged
+            _silijian_key = (row["id"], f"SILIJIAN_{_event_label}")
+            if _silijian_key not in _audit_logged:
+                _audit_logged.add(_silijian_key)
+                try:
+                    thread_id = row["discord_thread_id"] or "(无 Thread)"
+                    if target_state == "done":
+                        _si_msg = (
+                            f"✅ 奏折已完成\n\n"
+                            f"奏折：{row['id']}\n"
+                            f"标题：{row['title']}\n"
+                            f"执行者：{row['assigned_agent'] or '?'}\n"
+                            f"摘要：{(row['summary'] or '(无)')[:300]}\n"
+                            f"Thread ID：{thread_id}\n\n"
+                            f"请在对应 Thread 中通知皇上任务已完成。"
+                        )
+                    else:
+                        _si_msg = (
+                            f"❌ 奏折{'超时' if target_state == 'timeout' else '失败'}\n\n"
+                            f"奏折：{row['id']}\n"
+                            f"标题：{row['title']}\n"
+                            f"执行者：{row['assigned_agent'] or '?'}\n"
+                            f"原因：{(row['error'] or '(未说明)')[:300]}\n"
+                            f"Thread ID：{thread_id}\n\n"
+                            f"请在对应 Thread 中通知皇上并处理。"
+                        )
+                    notify_silijian(dict(row), _si_msg.split("\n\n", 1)[1] if "\n\n" in _si_msg else _si_msg)
+                except Exception as _si_e:
+                    log.warning("notify_silijian failed for %s/%s: %s", row["id"], target_state, _si_e)
     db.commit()
 
 
