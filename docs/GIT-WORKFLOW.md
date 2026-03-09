@@ -14,6 +14,7 @@
 | ❌ **禁止直接 commit 到 master** | master 分支只接受通过 PR 合并的内容 |
 | ✅ **所有开发在 feature branch 上进行** | 每个奏折对应一个独立分支 |
 | ✅ **一奏折一 Branch 一 PR** | 同一奏折全生命周期使用同一个 branch 和同一个 PR，返工时继续在原 branch 修改并 push |
+| ✅ **Issue + PR 双联** | 每个奏折对应一个 GitHub Issue（记录要做什么）和一个 PR（记录怎么做），PR 用 `Closes #N` 关联 Issue |
 | ✅ **PR 使用 Squash Merge** | 保持 master 历史清洁，每个奏折一个 commit |
 | 🏛️ **Merge 权限仅属司礼监** | 执行部门创建 PR 后等待司礼监 review 和 merge，**禁止自行 merge** |
 | ✅ **Merge 后立即同步本地 master** | 防止分歧积累 |
@@ -127,16 +128,39 @@ git commit -m "test: <测试描述>"
   chore    构建/工具链
 ```
 
-### 步骤三：推送并创建 PR
+### 步骤三：创建 GitHub Issue，推送并创建 PR
+
+#### 3a. 先创建 GitHub Issue（记录「要做什么」）
+
+```bash
+gh issue create \
+  --title "feat: <功能描述> (ZZ-XXXXXXXX-NNN)" \
+  --body "奏折: ZZ-XXXXXXXX-NNN
+
+## 任务背景
+{奏折 plan 中的描述}
+
+## 验收标准
+{奏折的 acceptance_criteria}
+
+## 改动范围
+{预计影响的文件/模块}"
+```
+
+记录返回的 Issue 编号（如 `#42`），后续 PR 中引用。
+
+#### 3b. 推送并创建 PR（记录「怎么做」，引用 Issue）
 
 ```bash
 # 推送 feature branch
 git push origin pr/ZZ-XXXXXXXX-NNN-feature-name
 
-# 创建 PR（gh CLI）
+# 创建 PR（gh CLI），body 中用 Closes #N 关联 Issue
 gh pr create \
   --title "feat: <功能描述> (ZZ-XXXXXXXX-NNN)" \
-  --body "奏折: ZZ-XXXXXXXX-NNN
+  --body "Closes #<issue-number>
+
+奏折: ZZ-XXXXXXXX-NNN
 
 ## 变更说明
 <做了什么>
@@ -148,6 +172,8 @@ gh pr create \
 ## 测试验证
 <如何验证>"
 ```
+
+**关键词说明：** `Closes #N` 会在 PR merge 后自动关闭 Issue #N（也可用 `Fixes #N` / `Resolves #N`）。
 
 ### 步骤四：等待 Review，按意见修改
 

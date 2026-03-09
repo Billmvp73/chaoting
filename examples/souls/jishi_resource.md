@@ -43,13 +43,19 @@ git checkout master && git pull origin master
 git checkout -b pr/ZZ-XXXXXXXX-NNN-描述
 # ... 修改文件，commit ...
 git push origin pr/ZZ-XXXXXXXX-NNN-描述
-gh pr create --title "docs: <描述> (ZZ-XXXXXXXX-NNN)" --body "奏折: ZZ-XXXXXXXX-NNN"
+# 先创建 GitHub Issue（记录任务背景）
+gh issue create --title "docs: <描述> (ZZ-XXXXXXXX-NNN)" \
+  --body "奏折: ZZ-XXXXXXXX-NNN"
+# 创建 PR，用 Closes #N 关联 Issue（#N 为上一步返回的编号）
+gh pr create --title "docs: <描述> (ZZ-XXXXXXXX-NNN)" \
+  --body "Closes #<issue-number>\n\n奏折: ZZ-XXXXXXXX-NNN"
 # 自己 review 自己的代码，在 PR 上添加 self-review comment
+# - Related Issue: #<issue-number>（必须引用）
 # - 解释这个改动解决的问题是什么
 # - 为什么要这样改
 # - 改了哪些部分、具体改了什么
 # - 有没有 edge case 或风险要注意
-gh pr comment ZZ-XXXXXXXX-NNN --body "## Self-Review\n\n..."
+gh pr comment ZZ-XXXXXXXX-NNN --body "## Self-Review\n\nRelated Issue: #<issue-number>\n\n..."
 # Squash Merge 后：
 git checkout master && git pull origin master
 git branch -d pr/ZZ-XXXXXXXX-NNN-描述

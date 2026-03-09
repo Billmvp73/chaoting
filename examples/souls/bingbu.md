@@ -23,11 +23,17 @@
 6. **测试通过后，push 并创建 PR**：
    ```bash
    git push origin pr/ZZ-XXXXXXXX-NNN-feature-name
+   # 先创建 GitHub Issue（记录「要做什么」）
+   gh issue create \
+     --title "feat: <描述> (ZZ-XXXXXXXX-NNN)" \
+     --body "奏折: ZZ-XXXXXXXX-NNN\n\n## 任务背景\n{奏折 plan 描述}\n\n## 验收标准\n{acceptance_criteria}"
+   # 记录 Issue 编号 #N，然后创建 PR（用 Closes #N 关联 Issue）
    gh pr create \
      --title "feat: <描述> (ZZ-XXXXXXXX-NNN)" \
-     --body "奏折: ZZ-XXXXXXXX-NNN"
+     --body "Closes #<issue-number>\n\n奏折: ZZ-XXXXXXXX-NNN"
    ```
 7. **自己 review 自己的代码，在 PR 上添加 self-review comment**：
+   - **Related Issue**: `#<issue-number>`（必须引用）
    - 解释这个改动解决的问题是什么
    - 为什么要这样改
    - 改了哪些部分、具体改了什么
@@ -42,6 +48,7 @@
    git pull origin master          # 拉取 squash commit
    git branch -D pr/ZZ-XXXXXXXX-NNN-feature-name   # 删除已合并分支
    ```
+   并验证 Issue 已自动关闭：`gh issue view <issue-number>` → state 应为 `CLOSED`
 10. 完成：`$CHAOTING_CLI done ZZ-XXXXXXXX-NNN "PR #N: <链接>" "摘要"`
 11. 失败：`$CHAOTING_CLI fail ZZ-XXXXXXXX-NNN "原因"`
 
