@@ -4,11 +4,19 @@
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timezone
 
 CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
+OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "themachine")
+
+# Shared audit log module
+_src_dir = os.path.dirname(os.path.abspath(__file__))
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+from chaoting_log import zouzhe_log  # noqa: E402
 
 
 def get_db():
@@ -18,6 +26,47 @@ def get_db():
     db.execute("PRAGMA busy_timeout=5000")
     return db
 
+
+def _send_thread_notify(thread_id: str, body: str) -> None:
+    """Send a message to a Discord Thread. Never raises — failure is logged to stderr."""
+    if not thread_id:
+        return
+    try:
+        subprocess.run(
+            [OPENCLAW_CLI, "message", "thread", "reply",
+             "--channel", "discord", "-t", thread_id, "-m", body[:2000]],
+            timeout=30,
+            capture_output=True,
+            check=False,
+        )
+    except Exception as exc:
+        print(f"[WARN] thread notify failed: {exc}", file=sys.stderr)
+
+
+def _fmt_done_thread(zid: str, agent: str, output: str, summary: str) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    out_snippet = (output or "")[:500]
+    return (
+        f"✅ **任务完成**\n\n"
+        f"奏折：{zid}\n"
+        f"完成者：{agent}\n"
+        f"完成时间：{ts}\n\n"
+        f"【工作内容】\n{out_snippet}\n\n"
+        f"【输出概述】\n{summary or '(无摘要)'}\n\n"
+        f"如有问题，请在此 Thread 中讨论。"
+    )
+
+
+def _fmt_fail_thread(zid: str, agent: str, reason: str) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return (
+        f"❌ **任务失败**\n\n"
+        f"奏折：{zid}\n"
+        f"执行者：{agent}\n"
+        f"失败时间：{ts}\n\n"
+        f"【失败原因】\n{reason or '(未说明)'}\n\n"
+        f"请在此 Thread 中讨论处理方案。"
+    )
 
 def out(data, ok=True):
     code = 0 if ok else 1
@@ -346,6 +395,11 @@ def cmd_revise(args):
 
         db.execute("COMMIT")
         db.close()
+        zouzhe_log(zid, caller, "STATE_TRANSITION",
+                   f"done → {target_state}",
+                   actor=caller,
+                   reason=reason,
+                   revise_count=new_count)
         out({
             "ok": True,
             "zouzhe_id": zid,
@@ -460,6 +514,10 @@ def cmd_plan(args):
         )
         db.commit()
         db.close()
+        zouzhe_log(zid, "zhongshu", "PLAN_SUBMIT",
+                   "计划已提交门下省审核",
+                   target_agent=target_agent,
+                   next_state="reviewing")
         out({"ok": True, "zouzhe_id": zid, "state": "reviewing", "target_agent": target_agent})
     else:
         # Skip review — go directly to executing
@@ -481,6 +539,10 @@ def cmd_plan(args):
         )
         db.commit()
         db.close()
+        zouzhe_log(zid, "zhongshu", "PLAN_SUBMIT",
+                   "计划已提交，直接进入执行（免审）",
+                   target_agent=target_agent,
+                   next_state="executing")
         out({"ok": True, "zouzhe_id": zid, "state": "executing", "target_agent": target_agent})
 
 
@@ -530,14 +592,31 @@ def cmd_done(args):
         db.close()
         out({"ok": False, "error": "state conflict — zouzhe not in executing state"}, ok=False)
 
+    zz = db.execute("SELECT assigned_agent, discord_thread_id FROM zouzhe WHERE id = ?", (zid,)).fetchone()
+    assigned_agent = zz["assigned_agent"] if zz else None
+    thread_id = zz["discord_thread_id"] if zz else None
+
     db.execute(
         "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
         "VALUES (?, ?, 'dispatcher', 'complete', ?)",
-        (zid, db.execute("SELECT assigned_agent FROM zouzhe WHERE id = ?", (zid,)).fetchone()["assigned_agent"],
-         summary),
+        (zid, assigned_agent, summary),
     )
     db.commit()
     db.close()
+
+    # Audit log: record completion in agent's log file
+    zouzhe_log(zid, assigned_agent or "unknown", "COMPLETED",
+               "✅ 任务完成",
+               output=(output or "")[:500],
+               summary=summary)
+
+    # Auto-push completion to Discord Thread (non-blocking)
+    if thread_id:
+        _send_thread_notify(
+            thread_id,
+            _fmt_done_thread(zid, assigned_agent or "unknown", output, summary),
+        )
+
     out({"ok": True, "zouzhe_id": zid, "state": "done"})
 
 
@@ -560,14 +639,30 @@ def cmd_fail(args):
         db.close()
         out({"ok": False, "error": "state conflict — zouzhe not in active state"}, ok=False)
 
+    zz = db.execute("SELECT assigned_agent, discord_thread_id FROM zouzhe WHERE id = ?", (zid,)).fetchone()
+    assigned_agent = zz["assigned_agent"] if zz else None
+    thread_id = zz["discord_thread_id"] if zz else None
+
     db.execute(
         "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
         "VALUES (?, ?, 'dispatcher', 'fail', ?)",
-        (zid, db.execute("SELECT assigned_agent FROM zouzhe WHERE id = ?", (zid,)).fetchone()["assigned_agent"],
-         reason),
+        (zid, assigned_agent, reason),
     )
     db.commit()
     db.close()
+
+    # Audit log: record failure in agent's log file
+    zouzhe_log(zid, assigned_agent or "unknown", "FAILED",
+               "❌ 任务失败",
+               reason=reason)
+
+    # Auto-push failure to Discord Thread (non-blocking)
+    if thread_id:
+        _send_thread_notify(
+            thread_id,
+            _fmt_fail_thread(zid, assigned_agent or "unknown", reason),
+        )
+
     out({"ok": True, "zouzhe_id": zid, "state": "failed"})
 
 
@@ -650,6 +745,11 @@ def cmd_vote(args):
 
         db.execute("COMMIT")
         db.close()
+        zouzhe_log(zid, jishi_id, "VOTE",
+                   vote.upper(),
+                   jishi=jishi_id,
+                   round=current_round,
+                   reason=reason)
         out({"ok": True, "action": "vote", "zouzhe_id": zid, "vote": vote,
              "jishi_id": jishi_id, "round": current_round})
     except Exception as e:

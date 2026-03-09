@@ -18,7 +18,14 @@ from logging.handlers import RotatingFileHandler
 CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
 CHAOTING_CLI = os.path.join(CHAOTING_DIR, "src", "chaoting") if os.path.isfile(os.path.join(CHAOTING_DIR, "src", "chaoting")) else os.path.join(CHAOTING_DIR, "chaoting")
-LOGS_DIR = os.path.join(CHAOTING_DIR, "logs")
+
+# Shared audit log module — also used by src/chaoting CLI
+import sys as _sys
+_src_dir = os.path.dirname(os.path.abspath(__file__))
+if _src_dir not in _sys.path:
+    _sys.path.insert(0, _src_dir)
+from chaoting_log import zouzhe_log, LOG_SEPARATOR  # noqa: E402
+from chaoting_log import LOGS_DIR  # noqa: E402
 
 
 logging.basicConfig(
@@ -76,92 +83,7 @@ OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "openclaw")
 # 审计日志系统 — 结构化奏折生命周期追踪
 # ──────────────────────────────────────────────────────
 
-_audit_loggers: dict = {}           # (zouzhe_id, role) -> logging.Logger
-_audit_lock = threading.Lock()      # Protects _audit_loggers dict
 _audit_logged: set = set()          # (zouzhe_id, event_label) — dedup for CLI-triggered events
-
-LOG_SEPARATOR = "━" * 42            # Visual block separator in log files
-
-
-def _get_audit_logger(zouzhe_id: str, role: str) -> logging.Logger:
-    """Get or create a RotatingFileHandler-backed logger for (zouzhe_id, role)."""
-    key = (zouzhe_id, role)
-    with _audit_lock:
-        if key not in _audit_loggers:
-            log_dir = os.path.join(LOGS_DIR, zouzhe_id)
-            os.makedirs(log_dir, exist_ok=True)
-            log_file = os.path.join(log_dir, f"{role}.log")
-
-            logger_name = f"chaoting.audit.{zouzhe_id}.{role}"
-            logger = logging.getLogger(logger_name)
-            logger.setLevel(logging.INFO)
-            logger.propagate = False   # Don't bubble to root dispatcher logger
-
-            if not logger.handlers:
-                handler = RotatingFileHandler(
-                    log_file,
-                    maxBytes=10 * 1024 * 1024,  # 10 MB
-                    backupCount=3,
-                    encoding="utf-8",
-                    mode="a",
-                )
-                handler.setFormatter(logging.Formatter("%(message)s"))
-                logger.addHandler(handler)
-
-            _audit_loggers[key] = logger
-        return _audit_loggers[key]
-
-
-def zouzhe_log(zouzhe_id: str, role: str, event_type: str, headline: str,
-               content: str = "", **kwargs):
-    """Write a rich structured log block to logs/{zouzhe_id}/{role}.log.
-
-    Block format:
-        [YYYY-MM-DD HH:MM:SS] ▶ EVENT_TYPE
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-        headline
-
-        KEY: value
-        ...
-
-        content (multi-line, optional)
-
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    Uses RotatingFileHandler (10 MB / backupCount=3).
-    Wrapped in try/except — never raises, never blocks main flow.
-    """
-    # Parameter guard — invalid inputs silently skipped, never crash caller
-    if not zouzhe_id or not role:
-        log.warning("zouzhe_log: invalid params zouzhe_id=%r role=%r — skipping", zouzhe_id, role)
-        return
-    try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        lines = [
-            f"\n[{timestamp}] ▶ {event_type}",
-            LOG_SEPARATOR,
-            "",
-            headline,
-        ]
-
-        kv_lines = [f"{k.upper()}: {v}" for k, v in kwargs.items() if v is not None and v != ""]
-        if kv_lines:
-            lines.append("")
-            lines.extend(kv_lines)
-
-        if content:
-            lines.append("")
-            lines.append(content)
-
-        lines.append("")
-        lines.append(LOG_SEPARATOR)
-
-        block = "\n".join(lines)
-        logger = _get_audit_logger(zouzhe_id, role)
-        logger.info(block)
-    except Exception as e:
-        log.warning("zouzhe_log failed for %s/%s/%s: %s", zouzhe_id, role, event_type, e)
 
 
 def _wrap(text: str, width: int = 78, indent: str = "   ") -> str:
