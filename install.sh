@@ -223,7 +223,7 @@ if [ "$AUTO_CONFIG" = "0" ]; then
 fi
 
 # Ask about model
-DEFAULT_MODEL="amazon-bedrock/anthropic.claude-sonnet-4-6"
+DEFAULT_MODEL="amazon-bedrock/us.anthropic.claude-sonnet-4-6"
 if [ "$AUTO_CONFIG" = "0" ]; then
     echo ""
     read -rp "Model for agents (Enter for $DEFAULT_MODEL): " USER_MODEL
@@ -382,7 +382,7 @@ else
         agent_name="${AGENT_NAMES[$i]}"
         agent_emoji="${AGENT_EMOJIS[$i]}"
         ws_path="$OPENCLAW_STATE_DIR/workspace-${agent_id}"
-        _AGENT_JSON+=$(printf '{"id":"%s","workspace":"%s","model":"%s","identity":{"name":"%s","emoji":"%s"}}' \
+        _AGENT_JSON+=$(printf '{"id":"%s","workspace":"%s","model":{"primary":"%s"},"identity":{"name":"%s","emoji":"%s"}}' \
             "$agent_id" "$ws_path" "$AGENT_MODEL" "$agent_name" "$agent_emoji")
         [ "$i" -lt "$last_idx" ] && _AGENT_JSON+=","
     done
