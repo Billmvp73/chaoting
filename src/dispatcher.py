@@ -299,27 +299,14 @@ def dispatch_agent(agent_id: str, zouzhe_id: str, timeout_sec: int, msg: str = N
                     stdout=f,
                     stderr=subprocess.STDOUT,
                 )
-            pid = proc.pid
-            log.info("Agent %s for %s started (pid=%d)", agent_id, zouzhe_id, pid)
-            # Record PID in DB
-            try:
-                pid_db = get_db()
-                pid_db.execute(
-                    "UPDATE zouzhe SET assigned_agent_pid = ? WHERE id = ?",
-                    (pid, zouzhe_id),
-                )
-                pid_db.commit()
-                pid_db.close()
-            except Exception as pid_err:
-                log.warning("Failed to record PID for %s: %s", zouzhe_id, pid_err)
-            # Wait for process to finish
+            log.info("Agent %s for %s started (cli_pid=%d)", agent_id, zouzhe_id, proc.pid)
             try:
                 proc.wait(timeout=timeout_sec + 60)
             except subprocess.TimeoutExpired:
-                log.warning("Agent %s for %s timed out (pid=%d), killing", agent_id, zouzhe_id, pid)
+                log.warning("Agent %s for %s CLI timed out (cli_pid=%d), killing", agent_id, zouzhe_id, proc.pid)
                 proc.kill()
                 proc.wait()
-            log.info("Agent %s for %s exited with code %d (pid=%d)", agent_id, zouzhe_id, proc.returncode, pid)
+            log.info("Agent %s for %s CLI exited with code %d (cli_pid=%d)", agent_id, zouzhe_id, proc.returncode, proc.pid)
         except Exception as e:
             log.error("Dispatch error for %s to %s: %s", zouzhe_id, agent_id, e)
             try:
@@ -333,18 +320,6 @@ def dispatch_agent(agent_id: str, zouzhe_id: str, timeout_sec: int, msg: str = N
                 err_db.close()
             except Exception as db_err:
                 log.error("Failed to log dispatch error: %s", db_err)
-        finally:
-            # Clear PID on exit
-            try:
-                done_db = get_db()
-                done_db.execute(
-                    "UPDATE zouzhe SET assigned_agent_pid = NULL WHERE id = ?",
-                    (zouzhe_id,),
-                )
-                done_db.commit()
-                done_db.close()
-            except Exception:
-                pass
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
@@ -957,62 +932,25 @@ def check_timeouts():
         db.close()
 
 
-def _is_process_alive(pid):
-    """Check if a process with given PID exists."""
-    if not pid:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
+def _log_inflight_on_startup():
+    """Log any in-flight zouzhe on startup (informational only).
 
-
-def recover_orphans():
+    Gateway agent sessions survive dispatcher restarts, so we do NOT
+    reset dispatched_at.  The existing check_timeouts() handles the
+    case where an agent truly dies without reporting back.
+    """
     db = get_db()
     try:
-        # Find all dispatched but unfinished zouzhe
         rows = db.execute("""
-            SELECT id, assigned_agent, assigned_agent_pid, timeout_sec FROM zouzhe
+            SELECT id, assigned_agent, state, dispatched_at FROM zouzhe
             WHERE state IN ('planning', 'executing', 'reviewing')
               AND dispatched_at IS NOT NULL
         """).fetchall()
-
-        if not rows:
-            log.info("No orphans to recover")
-            return
-
-        recovered = 0
-        alive = 0
-        for row in rows:
-            pid = row["assigned_agent_pid"]
-            zid = row["id"]
-            agent = row["assigned_agent"]
-
-            if _is_process_alive(pid):
-                log.info("Agent %s for %s still alive (pid=%d), skipping", agent, zid, pid)
-                alive += 1
-                continue
-
-            # Process is dead — recover
-            reason = f"orphan recovery: pid={pid or 'none'} not alive on startup"
-            db.execute(
-                "UPDATE zouzhe SET dispatched_at = NULL, assigned_agent_pid = NULL, "
-                "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
-                "WHERE id = ?",
-                (zid,),
-            )
-            db.execute(
-                "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
-                "VALUES (?, 'dispatcher', ?, 'recover', ?)",
-                (zid, agent, reason),
-            )
-            log.info("Recovered orphan %s (agent=%s, pid=%s)", zid, agent, pid or "none")
-            recovered += 1
-
-        if recovered:
-            db.commit()
-        log.info("Orphan recovery: %d recovered, %d still alive", recovered, alive)
+        if rows:
+            for row in rows:
+                log.info("In-flight on startup: %s (agent=%s, state=%s, dispatched=%s)",
+                         row["id"], row["assigned_agent"], row["state"], row["dispatched_at"])
+        log.info("Startup: %d in-flight zouzhe (trusting gateway sessions)", len(rows))
     finally:
         db.close()
 
@@ -1024,7 +962,7 @@ def main():
         log.error("Database not found at %s — run init_db.py first", DB_PATH)
         return
 
-    recover_orphans()
+    _log_inflight_on_startup()
 
     last_timeout_check = 0.0
     last_archive_check = 0.0
