@@ -1095,13 +1095,45 @@ def cmd_progress(args):
     out({"ok": True, "zouzhe_id": zid, "action": "progress"})
 
 
+def _parse_done_extras(args):
+    """Parse --dianji key=value and --lesson text flags from args[3:].
+
+    Returns (dianji_entries, lesson_entries) where:
+      dianji_entries = [{"key": ..., "value": ...}, ...]
+      lesson_entries = ["lesson text", ...]
+    """
+    dianji_entries = []
+    lesson_entries = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--dianji" and i + 1 < len(args):
+            kv = args[i + 1]
+            if "=" in kv:
+                k, _, v = kv.partition("=")
+                dianji_entries.append({"key": k.strip(), "value": v.strip()})
+            i += 2
+        elif args[i] == "--lesson" and i + 1 < len(args):
+            lesson_entries.append(args[i + 1])
+            i += 2
+        else:
+            i += 1
+    return dianji_entries, lesson_entries
+
+
 def cmd_done(args):
     if len(args) < 3:
-        out({"ok": False, "error": "usage: chaoting done <zouzhe_id> '<output>' '<summary>'"}, ok=False)
+        out({
+            "ok": False,
+            "error": (
+                "usage: chaoting done <zouzhe_id> '<output>' '<summary>'"
+                " [--dianji key=value ...] [--lesson '<text>' ...]"
+            ),
+        }, ok=False)
 
     zid = args[0]
     output = args[1]
     summary = args[2]
+    dianji_entries, lesson_entries = _parse_done_extras(args[3:])
 
     db = get_db()
     cursor = db.execute(
@@ -1125,6 +1157,32 @@ def cmd_done(args):
         (zid, assigned_agent, summary),
     )
     db.commit()
+
+    # ── P0: Write dianji entries (典籍) if provided ──
+    for entry in dianji_entries:
+        try:
+            db.execute(
+                "INSERT INTO dianji (agent_role, context_key, context_value, source, updated_at) "
+                "VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%S','now')) "
+                "ON CONFLICT(agent_role, context_key) DO UPDATE SET "
+                "context_value = excluded.context_value, source = excluded.source, "
+                "confidence = 'fresh', updated_at = strftime('%Y-%m-%dT%H:%M:%S','now')",
+                (assigned_agent or "unknown", entry["key"], entry["value"], zid),
+            )
+        except Exception:
+            pass
+    # ── P0: Write lesson entries (牵扯) if provided ──
+    for lesson in lesson_entries:
+        try:
+            db.execute(
+                "INSERT INTO qianche (agent_role, zouzhe_id, lesson) VALUES (?, ?, ?)",
+                (assigned_agent or "unknown", zid, lesson),
+            )
+        except Exception:
+            pass
+    if dianji_entries or lesson_entries:
+        db.commit()
+
     db.close()
 
     # Audit log: record completion in agent's log file
@@ -1206,6 +1264,61 @@ def cmd_context(args):
     db.commit()
     db.close()
     out({"ok": True, "agent_role": agent_role, "context_key": key})
+
+
+def cmd_lesson(args):
+    """Record a lesson learned (qianche) for a zouzhe or agent role.
+
+    Usage:
+      chaoting lesson <zouzhe_id> '<lesson>'            # infer role from zouzhe
+      chaoting lesson <zouzhe_id> '<lesson>' --role <role>  # explicit role
+      chaoting lesson --global '<lesson>' --role <role>     # no zouzhe binding
+    """
+    if len(args) < 2:
+        out({
+            "ok": False,
+            "error": "usage: chaoting lesson <zouzhe_id|--global> '<lesson>' [--role <role>]",
+        }, ok=False)
+
+    # Parse --role override
+    role_override = None
+    filtered_args = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--role" and i + 1 < len(args):
+            role_override = args[i + 1]
+            i += 2
+        else:
+            filtered_args.append(args[i])
+            i += 1
+
+    is_global = filtered_args[0] == "--global"
+    zid = None if is_global else filtered_args[0]
+    lesson = filtered_args[1] if len(filtered_args) > 1 else None
+
+    if not lesson:
+        out({"ok": False, "error": "lesson text is required"}, ok=False)
+
+    db = get_db()
+
+    # Determine agent_role
+    agent_role = role_override
+    if not agent_role and zid:
+        row = db.execute("SELECT assigned_agent FROM zouzhe WHERE id = ?", (zid,)).fetchone()
+        if row and row["assigned_agent"]:
+            agent_role = row["assigned_agent"]
+    if not agent_role:
+        # Fallback: use OPENCLAW_AGENT_ID env
+        agent_role = os.environ.get("OPENCLAW_AGENT_ID", "unknown")
+
+    db.execute(
+        "INSERT INTO qianche (agent_role, zouzhe_id, lesson) VALUES (?, ?, ?)",
+        (agent_role, zid, lesson),
+    )
+    db.commit()
+    db.close()
+
+    out({"ok": True, "agent_role": agent_role, "zouzhe_id": zid, "lesson": lesson[:100]})
 
 
 def cmd_vote(args):
@@ -1532,6 +1645,7 @@ COMMANDS = {
     "done": cmd_done,
     "fail": cmd_fail,
     "context": cmd_context,
+    "lesson": cmd_lesson,
     "vote": cmd_vote,
     "notify": cmd_notify,
     "teams": cmd_teams,

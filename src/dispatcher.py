@@ -266,6 +266,32 @@ def archive_old_logs():
     t.start()
 
 
+def mark_stale_dianji(stale_days: int = 30):
+    """Mark dianji entries older than stale_days as confidence='stale'.
+
+    Runs in a background thread. Safe to call hourly. Never raises.
+    """
+    def _worker():
+        try:
+            db = get_db()
+            result = db.execute(
+                "UPDATE dianji SET confidence = 'stale' "
+                "WHERE confidence = 'fresh' "
+                "AND julianday('now') - julianday(updated_at) > ?",
+                (stale_days,),
+            )
+            updated = result.rowcount
+            db.commit()
+            db.close()
+            if updated > 0:
+                log.info("mark_stale_dianji: marked %d entries as stale (>%d days)", updated, stale_days)
+        except Exception as e:
+            log.warning("mark_stale_dianji failed: %s", e)
+
+    t = threading.Thread(target=_worker, daemon=True, name="stale-dianji")
+    t.start()
+
+
 def get_db():
     db = sqlite3.connect(DB_PATH, timeout=30)
     db.row_factory = sqlite3.Row
@@ -274,8 +300,50 @@ def get_db():
     return db
 
 
+def _build_dianji_qianche_section(agent_id: str, zouzhe_id: str) -> str:
+    """Query dianji (limit=5) and qianche (limit=3) for agent_id and return a formatted section.
+
+    Returns empty string if nothing found. Truncates dianji values to 200 chars.
+    """
+    try:
+        db = get_db()
+        dianji_rows = db.execute(
+            "SELECT context_key, context_value, confidence FROM dianji "
+            "WHERE agent_role = ? ORDER BY updated_at DESC LIMIT 5",
+            (agent_id,),
+        ).fetchall()
+        qianche_rows = db.execute(
+            "SELECT lesson FROM qianche "
+            "WHERE agent_role = ? OR zouzhe_id = ? "
+            "ORDER BY id DESC LIMIT 3",
+            (agent_id, zouzhe_id),
+        ).fetchall()
+        db.close()
+
+        parts = []
+        if dianji_rows:
+            lines = ["📚 典籍参考（该部门历史经验，最近 5 条）："]
+            for r in dianji_rows:
+                marker = "🟡" if r["confidence"] == "stale" else "🟢"
+                val = (r["context_value"] or "")[:200]
+                lines.append(f"  {marker} {r['context_key']}: {val}")
+            parts.append("\n".join(lines))
+        if qianche_rows:
+            lines = ["📖 历史教训（最近 3 条）："]
+            for r in qianche_rows:
+                lesson = (r["lesson"] or "")[:200]
+                lines.append(f"  ⚠️ {lesson}")
+            parts.append("\n".join(lines))
+
+        return ("\n\n" + "\n\n".join(parts)) if parts else ""
+    except Exception as e:
+        log.warning("_build_dianji_qianche_section failed for %s/%s: %s", agent_id, zouzhe_id, e)
+        return ""
+
+
 def dispatch_agent(agent_id: str, zouzhe_id: str, timeout_sec: int, msg: str = None):
     if msg is None:
+        knowledge_section = _build_dianji_qianche_section(agent_id, zouzhe_id)
         msg = (
             f"\U0001f4dc 奏折 {zouzhe_id} 已派发给你。请立即执行以下步骤：\n\n"
             f"步骤一：接旨，运行这个命令查看任务详情：\n"
@@ -287,6 +355,7 @@ def dispatch_agent(agent_id: str, zouzhe_id: str, timeout_sec: int, msg: str = N
             f"完成: {CHAOTING_CLI} done {zouzhe_id} '产出' '摘要'\n"
             f"失败: {CHAOTING_CLI} fail {zouzhe_id} '原因'\n\n"
             f"⚠️ 你必须用 exec 工具运行上述命令。先 pull 查看任务，完成后用 done 或 fail 汇报。"
+            f"{knowledge_section}"
         )
 
     def _run():
@@ -1003,6 +1072,7 @@ def main():
 
             if now - last_archive_check >= 3600:   # 每小时归档一次
                 archive_old_logs()
+                mark_stale_dianji()              # P1: 标记过期典籍
                 last_archive_check = now
 
         except Exception:
