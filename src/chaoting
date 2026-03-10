@@ -720,6 +720,11 @@ def cmd_revise(args):
             "exec_revise_count = exec_revise_count + 1",
             "revise_count = 0",
             "plan = NULL",
+            # ── 修复 ZZ-20260310-029：清空 plan_history 确保路径判断不被旧 nogo 污染 ──
+            # format_revising_message 通过 plan_history[-1].votes 判断触发原因
+            # （nogo → gate_reject 路径A；空 → emperor_revise 路径B）
+            # 若不清空，上一轮执行前的 gate_reject 数据会导致 emperor_revise 后走错路径
+            "plan_history = NULL",
             "review_required = ?",
             "review_agents = NULL",
             "revise_history = ?",
