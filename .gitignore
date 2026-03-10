@@ -28,3 +28,6 @@ CLAUDE.md
 # Design docs (short-lived, local only)
 /.design_doc/
 config
+
+# sentinels
+sentinels
