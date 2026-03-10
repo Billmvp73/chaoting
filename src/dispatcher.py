@@ -402,7 +402,64 @@ def format_review_message(zouzhe, jishi_id: str, role_desc: str) -> str:
 
 
 def format_revising_message(zouzhe) -> str:
-    """Build the revising dispatch message for zhongshu, including nogo reasons."""
+    """Build the revising dispatch message for zhongshu.
+
+    V0.4 修复（ZZ-20260310-013 RC-1）：
+    - 路径 A（menxia 封驳）：从 plan_history 读取 jishi 意见
+    - 路径 B（皇上/silijian exec_revise）：从 revise_history 读取返工原因（最高优先级）
+    """
+    # ── 路径 B 优先：检查 revise_history（皇上/silijian revise 原因）──
+    revise_hist = []
+    try:
+        revise_hist = json.loads(zouzhe.get("revise_history") or "[]")
+    except Exception:
+        pass
+    exec_revise_count = zouzhe.get("exec_revise_count") or 0
+
+    if revise_hist and exec_revise_count > 0:
+        latest = revise_hist[-1]
+        revise_reason = latest.get("reason", "(无原因)")
+        revised_by = latest.get("revised_by", "silijian")
+        revised_at = latest.get("revised_at", "")
+        dup_sim = latest.get("dup_similarity", 0.0)
+
+        # 包含上轮规划（如有）供参考
+        plan_history = []
+        try:
+            plan_history = json.loads(zouzhe.get("plan_history") or "[]")
+        except Exception:
+            pass
+        previous_plan_section = ""
+        if plan_history:
+            last_plan = plan_history[-1].get("plan")
+            if last_plan:
+                previous_plan_section = (
+                    f"\n\n【上轮规划（已作废，供参考）】\n"
+                    f"```json\n{json.dumps(last_plan, ensure_ascii=False, indent=2)[:800]}\n```"
+                )
+
+        dup_note = ""
+        if dup_sim >= 0.85:
+            dup_note = (
+                f"\n\n⚠️ 注意：此次返工原因与上轮高度相似（相似度 {dup_sim:.0%}）。"
+                f"请在新方案中提供实质性改进，而不是重复相同方向。"
+            )
+
+        return (
+            f"⚠️ 【上旨返工（第 {exec_revise_count} 次）】\n"
+            f"来自：{revised_by}  时间：{revised_at}\n\n"
+            f"【皇上旨意（最高优先级，必须完整体现在新方案中）】\n"
+            f"{revise_reason}\n\n"
+            f"⚠️ 若旨意指定了新的执行部门（target_agent），必须在 plan JSON 中遵循。"
+            f"不得沿用原方案的 target_agent。"
+            f"{dup_note}"
+            f"{previous_plan_section}\n\n"
+            f"请制定新方案后提交:\n"
+            f"  {CHAOTING_CLI} pull {zouzhe['id']}\n"
+            f"  {CHAOTING_CLI} plan {zouzhe['id']} '{{new_plan_json}}'"
+        )
+
+    # ── 路径 A（jishi 封驳）── 原有逻辑保持不变
     history = json.loads(zouzhe["plan_history"]) if zouzhe["plan_history"] else []
     if not history:
         return (

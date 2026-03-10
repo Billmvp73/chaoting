@@ -101,6 +101,12 @@ ZOUZHE_NEW_COLUMNS = [
     ("discord_thread_id", "TEXT"),  # Discord Thread ID for this zouzhe
     ("exec_revise_count", "INTEGER DEFAULT 0"),  # 执行层返工计数（独立于门下省封驳计数）
     ("revise_history", "TEXT"),     # JSON 数组，每轮返工的归档记录
+    # ── V0.4 revise-unlimited 扩展 ──
+    ("revise_limit", "INTEGER DEFAULT 0"),          # 0=无限制; N>0=最多N次 (仅 silijian/zhongshu 可设置)
+    ("revise_timeout_days", "INTEGER DEFAULT 0"),   # 0=不限时; N>0=N天无突破触发 suspended
+    ("last_revise_reason", "TEXT"),                 # 最后一次返工原因（快速查询用）
+    ("suspended_at", "TEXT"),                       # 非空则奏折处于暂停状态（防爆轮触发）
+    ("total_revise_rounds", "INTEGER DEFAULT 0"),   # 累计总返工次数（门下省封驳 + exec_revise）
 ]
 
 
