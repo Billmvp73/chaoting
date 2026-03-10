@@ -19,6 +19,10 @@ Agents communicate exclusively through a shared SQLite database (stigmergy patte
 - **Auto-retry with timeout** — Failed or timed-out tasks are automatically retried
 - **Self-contained workspace deploy** — Each workspace is independent with its own code, DB, and agent configs
 - **Discord notifications** — Per-zouzhe thread notifications for status updates
+- **Knowledge accumulation** — `dianji` (典籍) key-value domain knowledge + `qianche` (前車) lessons learned, injected into every task dispatch
+- **Emperor's veto** — `chaoting decide` lets Silijian override three-rejection escalations: approve/reject/revise
+- **Unlimited revise** — Emperor revise (`executor_revise`) has no round cap; gate reject still enforces 3-round limit
+- **Agent Teams** — Bingbu can delegate complex tasks to Claude Code via iterative multi-round ACP sessions
 
 ---
 
@@ -64,7 +68,11 @@ created → planning → reviewing → executing → done │
               │         ▼                  failed  │
               │      revising ─────────────────────┘
               │         │
-              └─────────┘  (三驳 → failed)
+              └─────────┘  (三驳 → escalated → silijian decide)
+                                     │
+                              escalated ─── decide approve → executing
+                                      └─── decide reject  → failed
+                                      └─── decide revise  → revising
 ```
 
 | State | Description | Owner |
@@ -75,8 +83,9 @@ created → planning → reviewing → executing → done │
 | `revising` | Rejected, returned to Zhongshu for revision | System → Zhongshu |
 | `executing` | Approved, being executed | Six Ministries |
 | `done` | Task completed | Six Ministries |
-| `failed` | Task failed (including 3 consecutive rejections) | Various |
+| `failed` | Task failed | Various |
 | `timeout` | Timed out after max retries exhausted | Dispatcher |
+| `escalated` | Three consecutive rejections — awaiting Silijian's manual decision | Silijian |
 
 ### Concurrency Model
 
@@ -155,8 +164,8 @@ Custom reviewers can be specified via `review_agents` JSON array.
 | `toupiao` | 投票 | Reviewer votes (UNIQUE per zouzhe + round + reviewer) |
 | `liuzhuan` | 流转 | State transition audit log |
 | `zoubao` | 奏报 | Progress reports from agents |
-| `dianji` | 典籍 | Cross-task domain knowledge (key-value per agent role) |
-| `qianche` | 前車 | Lessons learned |
+| `dianji` | 典籍 | Cross-task domain knowledge (key-value per agent role); injected into dispatch |
+| `qianche` | 前車 | Lessons learned (per agent role + zouzhe); injected into dispatch |
 | `tongzhi` | 通知 | Notification queue (Discord) |
 
 ---
@@ -239,7 +248,7 @@ rm ~/.config/systemd/user/chaoting-dispatcher-.themachine.service
 # Create a new zouzhe
 chaoting new --title "Task title" --desc "Description" --review 2
 
-# Pull task details (for agents)
+# Pull task details (for agents); injects relevant dianji + qianche context
 chaoting pull ZZ-20260308-001
 
 # Submit plan (Zhongshu)
@@ -252,14 +261,31 @@ chaoting vote ZZ-20260308-001 nogo "Missing rollback plan" --as jishi_risk
 # Report progress
 chaoting progress ZZ-20260308-001 "Progress update"
 
-# Mark complete
+# Mark complete (optionally write domain knowledge and lessons inline)
 chaoting done ZZ-20260308-001 "Output" "Summary"
+chaoting done ZZ-20260308-001 "Output" "Summary" \
+  --dianji repo_path=/home/tetter/self-project/chaoting \
+  --lesson "Always back up chaoting.db before ALTER TABLE"
 
 # Mark failed
 chaoting fail ZZ-20260308-001 "Failure reason"
 
-# Update domain knowledge
+# Emperor's decision on escalated zouzhe (three-rejection override)
+chaoting decide ZZ-20260308-001 approve "Approve with caveats"
+chaoting decide ZZ-20260308-001 reject  "Reject — out of scope"
+chaoting decide ZZ-20260308-001 revise  "Return to Zhongshu — change target agent"
+
+# Record a lesson learned (qianche) directly
+chaoting lesson ZZ-20260308-001 "Lesson text"
+chaoting lesson ZZ-20260308-001 "Lesson text" --role bingbu
+chaoting lesson --global "Global lesson" --role bingbu
+
+# Update domain knowledge (dianji)
 chaoting context bingbu "key" "value" --source ZZ-20260308-001
+
+# List / inspect
+chaoting list [--state executing] [--limit 20]
+chaoting status ZZ-20260308-001
 ```
 
 ---
