@@ -28,7 +28,11 @@ if os.path.isfile(_dotenv_path):
                 if _k.strip() not in os.environ:
                     os.environ[_k.strip()] = _v.strip()
 
-DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
+# CHAOTING_WORKSPACE — if set, data (DB, logs, sentinels) live under
+# {workspace}/.chaoting/ instead of the repo root.
+_workspace = os.environ.get("CHAOTING_WORKSPACE", "")
+CHAOTING_DATA_DIR = os.path.join(_workspace, ".chaoting") if _workspace else CHAOTING_DIR
+DB_PATH = os.path.join(CHAOTING_DATA_DIR, "chaoting.db")
 CHAOTING_CLI = os.path.join(CHAOTING_DIR, "src", "chaoting") if os.path.isfile(os.path.join(CHAOTING_DIR, "src", "chaoting")) else os.path.join(CHAOTING_DIR, "chaoting")
 
 # Shared audit log module — also used by src/chaoting CLI

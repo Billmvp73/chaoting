@@ -17,7 +17,13 @@ CHAOTING_DIR = os.environ.get(
     "CHAOTING_DIR",
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 )
-LOGS_DIR = os.path.join(CHAOTING_DIR, "logs")
+
+# CHAOTING_WORKSPACE — if set, data (DB, logs, sentinels) live under
+# {workspace}/.chaoting/ instead of the repo root (CHAOTING_DIR).
+# This enables multiple independent Chaoting instances per workspace.
+_workspace = os.environ.get("CHAOTING_WORKSPACE", "")
+CHAOTING_DATA_DIR = os.path.join(_workspace, ".chaoting") if _workspace else CHAOTING_DIR
+LOGS_DIR = os.path.join(CHAOTING_DATA_DIR, "logs")
 
 LOG_SEPARATOR = "━" * 42   # Visual block separator used in log blocks
 
