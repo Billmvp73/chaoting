@@ -98,7 +98,10 @@ def send_discord(zouzhe_id: str, body: str, thread_id: str = None) -> bool:
 
     If thread_id is not provided, looks it up from the zouzhe record.
     Returns True if sent successfully, False otherwise. Never raises.
+    Set CHAOTING_NO_DISCORD=1 to suppress all notifications (for testing).
     """
+    if os.environ.get("CHAOTING_NO_DISCORD"):
+        return True
     # Resolve thread_id from DB if not provided
     if thread_id is None:
         try:
@@ -1111,6 +1114,8 @@ def _parse_done_extras(args):
             if "=" in kv:
                 k, _, v = kv.partition("=")
                 dianji_entries.append({"key": k.strip(), "value": v.strip()})
+            else:
+                print(f"[WARN] --dianji '{kv}' 缺少 '='，格式应为 key=value，已跳过", file=sys.stderr)
             i += 2
         elif args[i] == "--lesson" and i + 1 < len(args):
             lesson_entries.append(args[i + 1])
@@ -1169,8 +1174,8 @@ def cmd_done(args):
                 "confidence = 'fresh', updated_at = strftime('%Y-%m-%dT%H:%M:%S','now')",
                 (assigned_agent or "unknown", entry["key"], entry["value"], zid),
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] dianji write failed for '{entry['key']}': {e}", file=sys.stderr)
     # ── P0: Write lesson entries (牵扯) if provided ──
     for lesson in lesson_entries:
         try:
@@ -1178,8 +1183,8 @@ def cmd_done(args):
                 "INSERT INTO qianche (agent_role, zouzhe_id, lesson) VALUES (?, ?, ?)",
                 (assigned_agent or "unknown", zid, lesson),
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] qianche write failed: {e}", file=sys.stderr)
     if dianji_entries or lesson_entries:
         db.commit()
 

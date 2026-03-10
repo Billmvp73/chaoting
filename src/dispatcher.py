@@ -314,9 +314,9 @@ def _build_dianji_qianche_section(agent_id: str, zouzhe_id: str) -> str:
         ).fetchall()
         qianche_rows = db.execute(
             "SELECT lesson FROM qianche "
-            "WHERE agent_role = ? OR zouzhe_id = ? "
+            "WHERE agent_role = ? "
             "ORDER BY id DESC LIMIT 3",
-            (agent_id, zouzhe_id),
+            (agent_id,),
         ).fetchall()
         db.close()
 

@@ -14,7 +14,6 @@ import subprocess
 import sys
 import tempfile
 import shutil
-import time
 
 # ── paths ─────────────────────────────────────────────
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -50,6 +49,7 @@ def make_workspace():
     env = os.environ.copy()
     env["CHAOTING_WORKSPACE"] = tmp
     env["CHAOTING_DIR"] = REPO
+    env["CHAOTING_NO_DISCORD"] = "1"
     # Init DB
     result = subprocess.run(
         [sys.executable, os.path.join(SRC, "init_db.py")],
