@@ -1153,6 +1153,79 @@ def cmd_teams(args):
         except Exception as exc:
             out({"ok": False, "error": str(exc), "zouzhe_id": a.zouzhe_id}, ok=False)
 
+    # ── metrics (V0.4) ──
+    elif subcmd == "metrics":
+        p = argparse.ArgumentParser(prog="chaoting teams metrics")
+        p.add_argument("zouzhe_id")
+        p.add_argument("--teammates", nargs="*", default=None)
+        a = p.parse_args(rest)
+        from sentinel import SentinelWatcher, list_sentinels
+        teammate_ids = a.teammates or list_sentinels(CHAOTING_DIR, a.zouzhe_id)
+        watcher = SentinelWatcher(a.zouzhe_id, CHAOTING_DIR)
+        watcher.register(teammate_ids)
+        m = watcher.get_metrics()
+        out({"ok": True, **m})
+
+    # ── logs --follow (V0.4) ──
+    elif subcmd == "logs":
+        p = argparse.ArgumentParser(prog="chaoting teams logs")
+        p.add_argument("zouzhe_id")
+        p.add_argument("--teammates", nargs="*", default=None)
+        p.add_argument("--follow", action="store_true",
+                       help="Keep polling until all done/timeout")
+        p.add_argument("--interval", type=float, default=2.0)
+        p.add_argument("--timeout", type=int, default=600)
+        a = p.parse_args(rest)
+        from sentinel import SentinelWatcher, list_sentinels, SENTINEL_DONE, SENTINEL_FAILED, SENTINEL_TIMEOUT
+        teammate_ids = a.teammates or list_sentinels(CHAOTING_DIR, a.zouzhe_id)
+        watcher = SentinelWatcher(a.zouzhe_id, CHAOTING_DIR)
+        watcher.register(teammate_ids)
+
+        if not a.follow:
+            line = watcher.progress_summary()
+            print(f"[{a.zouzhe_id}] {line}")
+        else:
+            start = __import__("time").time()
+            import time as _time
+            while True:
+                line = watcher.progress_summary()
+                ts = __import__("datetime").datetime.now().strftime("%H:%M:%S")
+                print(f"[{ts}] {a.zouzhe_id}: {line}")
+                statuses = watcher.status()
+                if all(
+                    d is not None and d.get("status") in (SENTINEL_DONE, SENTINEL_FAILED, SENTINEL_TIMEOUT)
+                    for d in statuses.values()
+                ):
+                    print(f"[{ts}] All done.")
+                    break
+                if a.timeout > 0 and _time.time() - start >= a.timeout:
+                    print(f"[{ts}] Logs timeout after {a.timeout}s")
+                    break
+                _time.sleep(a.interval)
+
+    # ── generate-prompt (V0.4) ──
+    elif subcmd == "generate-prompt":
+        p = argparse.ArgumentParser(prog="chaoting teams generate-prompt")
+        p.add_argument("zouzhe_id")
+        p.add_argument("--workflow", choices=["parallel", "iterative"], required=True)
+        p.add_argument("--task", required=True, help="Base task description")
+        p.add_argument("--criteria", default="Check: correctness, error handling, code quality")
+        p.add_argument("--max-rounds", type=int, default=3)
+        p.add_argument("--quality-threshold", type=int, default=12)
+        a = p.parse_args(rest)
+        from teams import generate_lead_prompt
+        prompt = generate_lead_prompt(
+            workflow=a.workflow,
+            zouzhe_id=a.zouzhe_id,
+            base_task=a.task,
+            review_criteria=a.criteria,
+            chaoting_dir=CHAOTING_DIR,
+            max_rounds=a.max_rounds,
+            quality_threshold=a.quality_threshold,
+        )
+        # Output raw prompt (not JSON), for direct use in shell scripts
+        print(prompt)
+
     else:
         out({"ok": False, "error": f"unknown subcommand: {subcmd}"}, ok=False)
 

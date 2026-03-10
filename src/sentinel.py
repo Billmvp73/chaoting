@@ -1,23 +1,15 @@
 #!/usr/bin/env python3
 """
-sentinel.py — 文件哨兵模块 (File Sentinel)
+sentinel.py — 文件哨兵模块 (File Sentinel) V0.4
 
 为 Chaoting Agent Teams 并发机制提供基础设施：
 - 创建/写入哨兵文件，标记子任务完成状态
+- V0.4 新增：Progress 信号（running + progress% + message）
+- V0.4 新增：Iteration Metadata（round/score/approved）
+- V0.4 新增：状态机强制化：pending → running → done/failed/timeout
 - 轮询检测多个哨兵文件是否全部完成
 - 超时和异常处理
 - 重启恢复：检查已有哨兵文件恢复状态
-
-用法示例：
-    sentinel = SentinelWatcher(zouzhe_id="ZZ-20260310-004",
-                               chaoting_dir=CHAOTING_DIR)
-    sentinel.register(["coder", "tester", "docs"])
-    
-    # 在 teammate 中：
-    sentinel.write_done("coder", status="success", output="coder.txt")
-    
-    # 在 lead 中：
-    results = sentinel.wait_all(timeout=300)
 """
 
 import json
@@ -26,7 +18,7 @@ import time
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Callable
 
 log = logging.getLogger(__name__)
 
@@ -229,15 +221,54 @@ class SentinelWatcher:
         create_sentinel_dir(self.chaoting_dir, self.zouzhe_id)
         log.info("Registered %d teammates: %s", len(teammate_ids), teammate_ids)
 
+    def write_running(
+        self,
+        teammate_id: str,
+        progress: float = 0.0,
+        message: Optional[str] = None,
+    ) -> Path:
+        """
+        V0.4: 写入 running 进度哨兵（供 Teammate 在执行中调用）。
+
+        Args:
+            teammate_id: Teammate 名称
+            progress: 完成进度 0.0-1.0
+            message: 进度描述（如 "Applying improvement 2/3"）
+        """
+        return write_sentinel(
+            self.chaoting_dir,
+            self.zouzhe_id,
+            teammate_id,
+            status=SENTINEL_RUNNING,
+            metadata={"progress": max(0.0, min(1.0, progress)), "message": message or ""},
+        )
+
     def write_done(
         self,
         teammate_id: str,
         status: str = SENTINEL_DONE,
         output: Optional[str] = None,
         error: Optional[str] = None,
+        round_num: Optional[int] = None,
+        score: Optional[int] = None,
+        approved: Optional[bool] = None,
         **metadata,
     ) -> Path:
-        """写入完成哨兵（供 Teammate 调用）。"""
+        """
+        写入完成哨兵（供 Teammate 调用）。
+
+        V0.4 新增参数：
+            round_num: 当前迭代轮次（用于 IterationCoordinator）
+            score: 质量评分（reviewer 使用）
+            approved: 是否通过审查（reviewer 使用）
+        """
+        iter_meta: Dict[str, Any] = dict(metadata)
+        if round_num is not None:
+            iter_meta["round"] = round_num
+        if score is not None:
+            iter_meta["score"] = score
+        if approved is not None:
+            iter_meta["approved"] = approved
         return write_sentinel(
             self.chaoting_dir,
             self.zouzhe_id,
@@ -245,7 +276,7 @@ class SentinelWatcher:
             status=status,
             output=output,
             error=error,
-            metadata=metadata,
+            metadata=iter_meta,
         )
 
     def status(self) -> Dict[str, Optional[Dict]]:
@@ -369,6 +400,88 @@ class SentinelWatcher:
     def cleanup(self) -> int:
         """删除所有哨兵文件（任务完成后清理）。"""
         return cleanup_sentinels(self.chaoting_dir, self.zouzhe_id)
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """
+        V0.4: 收集性能指标（用于 chaoting teams metrics 命令）。
+
+        Returns:
+            {
+              "zouzhe_id": str,
+              "total": int,
+              "done": int,
+              "failed": int,
+              "pending": int,
+              "running": int,
+              "timestamps": {teammate_id: timestamp_str},
+              "scores": {teammate_id: score_int},       # 如有 metadata.score
+              "rounds": {teammate_id: round_int},       # 如有 metadata.round
+              "outputs": {teammate_id: output_path},
+            }
+        """
+        statuses = self.status()
+        metrics: Dict[str, Any] = {
+            "zouzhe_id": self.zouzhe_id,
+            "total": len(self._registered),
+            "done": 0,
+            "failed": 0,
+            "timeout": 0,
+            "running": 0,
+            "pending": 0,
+            "timestamps": {},
+            "progress": {},
+            "scores": {},
+            "rounds": {},
+            "outputs": {},
+        }
+        for tid, data in statuses.items():
+            if data is None:
+                metrics["pending"] += 1
+                continue
+            st = data.get("status", "")
+            if st == SENTINEL_DONE:
+                metrics["done"] += 1
+            elif st == SENTINEL_FAILED:
+                metrics["failed"] += 1
+            elif st == SENTINEL_TIMEOUT:
+                metrics["timeout"] += 1
+            elif st == SENTINEL_RUNNING:
+                metrics["running"] += 1
+                p = data.get("metadata", {}).get("progress")
+                if p is not None:
+                    metrics["progress"][tid] = p
+            ts = data.get("timestamp")
+            if ts:
+                metrics["timestamps"][tid] = ts
+            out = data.get("output")
+            if out:
+                metrics["outputs"][tid] = out
+            meta = data.get("metadata") or {}
+            if "score" in meta:
+                metrics["scores"][tid] = meta["score"]
+            if "round" in meta:
+                metrics["rounds"][tid] = meta["round"]
+        return metrics
+
+    def progress_summary(self) -> str:
+        """V0.4: 返回人类可读的进度摘要行（用于 follow 模式）。"""
+        statuses = self.status()
+        parts = []
+        for tid, data in sorted(statuses.items()):
+            if data is None:
+                parts.append(f"⏳ {tid}")
+            elif data.get("status") == SENTINEL_RUNNING:
+                pct = data.get("metadata", {}).get("progress", 0)
+                msg = data.get("metadata", {}).get("message", "")
+                bar = "=" * int(pct * 10) + ">" + " " * (9 - int(pct * 10))
+                parts.append(f"🔄 {tid} [{bar}] {int(pct*100)}% {msg[:30]}")
+            elif data.get("status") == SENTINEL_DONE:
+                parts.append(f"✅ {tid}")
+            elif data.get("status") == SENTINEL_FAILED:
+                parts.append(f"❌ {tid}")
+            elif data.get("status") == SENTINEL_TIMEOUT:
+                parts.append(f"⏰ {tid}")
+        return " | ".join(parts)
 
     # ── 打印辅助 ──
 
