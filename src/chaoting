@@ -1000,6 +1000,163 @@ def cmd_notify(args):
     out({"ok": sent, "zouzhe_id": zid, "action": "notify"}, ok=sent)
 
 
+# ──────────────────────────────────────────────────────
+# Agent Teams 文件哨兵命令
+# ──────────────────────────────────────────────────────
+
+def cmd_teams(args):
+    """
+    Agent Teams 文件哨兵管理命令。
+
+    子命令：
+      sentinel-write  <zouzhe_id> <teammate_id> [--status done|failed] [--output <text>] [--error <text>]
+      sentinel-read   <zouzhe_id> <teammate_id>
+      sentinel-status <zouzhe_id> [--teammates t1 t2 ...]
+      sentinel-wait   <zouzhe_id> <t1> [t2 ...] [--timeout N] [--poll N]
+      sentinel-list   <zouzhe_id>
+      sentinel-cleanup <zouzhe_id>
+      run             <zouzhe_id> -- Run an Agent Teams task via claude --print
+    """
+    from sentinel import (
+        SentinelWatcher, write_sentinel, read_sentinel,
+        list_sentinels, cleanup_sentinels,
+        SENTINEL_DONE, SENTINEL_FAILED,
+    )
+    import argparse
+
+    if not args or args[0] in ("-h", "--help"):
+        out({"ok": False, "error": (
+            "usage: chaoting teams <subcmd> ...\n"
+            "subcmds: sentinel-write sentinel-read sentinel-status "
+            "sentinel-wait sentinel-list sentinel-cleanup run"
+        )}, ok=False)
+
+    subcmd = args[0]
+    rest = args[1:]
+
+    # ── sentinel-write ──
+    if subcmd == "sentinel-write":
+        p = argparse.ArgumentParser(prog="chaoting teams sentinel-write")
+        p.add_argument("zouzhe_id")
+        p.add_argument("teammate_id")
+        p.add_argument("--status", default="done")
+        p.add_argument("--output", default=None)
+        p.add_argument("--error", default=None)
+        a = p.parse_args(rest)
+        path = write_sentinel(
+            CHAOTING_DIR, a.zouzhe_id, a.teammate_id,
+            status=a.status, output=a.output, error=a.error,
+        )
+        out({"ok": True, "path": str(path), "zouzhe_id": a.zouzhe_id,
+             "teammate_id": a.teammate_id, "status": a.status})
+
+    # ── sentinel-read ──
+    elif subcmd == "sentinel-read":
+        p = argparse.ArgumentParser(prog="chaoting teams sentinel-read")
+        p.add_argument("zouzhe_id")
+        p.add_argument("teammate_id")
+        a = p.parse_args(rest)
+        data = read_sentinel(CHAOTING_DIR, a.zouzhe_id, a.teammate_id)
+        if data:
+            out({"ok": True, **data})
+        else:
+            out({"ok": False, "error": "sentinel not found",
+                 "zouzhe_id": a.zouzhe_id, "teammate_id": a.teammate_id}, ok=False)
+
+    # ── sentinel-status ──
+    elif subcmd == "sentinel-status":
+        p = argparse.ArgumentParser(prog="chaoting teams sentinel-status")
+        p.add_argument("zouzhe_id")
+        p.add_argument("--teammates", nargs="*", default=None)
+        a = p.parse_args(rest)
+        teammate_ids = a.teammates or list_sentinels(CHAOTING_DIR, a.zouzhe_id)
+        watcher = SentinelWatcher(a.zouzhe_id, CHAOTING_DIR)
+        watcher.register(teammate_ids)
+        statuses = watcher.status()
+        summary = {
+            "zouzhe_id": a.zouzhe_id,
+            "total": len(teammate_ids),
+            "done": sum(1 for d in statuses.values() if d and d.get("status") == SENTINEL_DONE),
+            "failed": sum(1 for d in statuses.values() if d and d.get("status") == SENTINEL_FAILED),
+            "pending": sum(1 for d in statuses.values() if d is None),
+            "details": {t: (d.get("status") if d else "pending") for t, d in statuses.items()},
+        }
+        out({"ok": True, **summary})
+
+    # ── sentinel-wait ──
+    elif subcmd == "sentinel-wait":
+        p = argparse.ArgumentParser(prog="chaoting teams sentinel-wait")
+        p.add_argument("zouzhe_id")
+        p.add_argument("teammates", nargs="+")
+        p.add_argument("--timeout", type=int, default=600)
+        p.add_argument("--poll", type=float, default=2.0)
+        a = p.parse_args(rest)
+        watcher = SentinelWatcher(a.zouzhe_id, CHAOTING_DIR)
+        watcher.register(a.teammates)
+        result = watcher.wait_all(timeout=a.timeout, poll_interval=a.poll)
+        out({"ok": result["status"] == "complete", **result})
+
+    # ── sentinel-list ──
+    elif subcmd == "sentinel-list":
+        p = argparse.ArgumentParser(prog="chaoting teams sentinel-list")
+        p.add_argument("zouzhe_id")
+        a = p.parse_args(rest)
+        items = list_sentinels(CHAOTING_DIR, a.zouzhe_id)
+        out({"ok": True, "zouzhe_id": a.zouzhe_id, "sentinels": items})
+
+    # ── sentinel-cleanup ──
+    elif subcmd == "sentinel-cleanup":
+        p = argparse.ArgumentParser(prog="chaoting teams sentinel-cleanup")
+        p.add_argument("zouzhe_id")
+        a = p.parse_args(rest)
+        n = cleanup_sentinels(CHAOTING_DIR, a.zouzhe_id)
+        out({"ok": True, "zouzhe_id": a.zouzhe_id, "deleted": n})
+
+    # ── run ──
+    elif subcmd == "run":
+        p = argparse.ArgumentParser(prog="chaoting teams run")
+        p.add_argument("zouzhe_id")
+        p.add_argument("--prompt", required=True, help="Task prompt for the lead agent")
+        p.add_argument("--max-turns", type=int, default=80)
+        p.add_argument("--timeout", type=int, default=600)
+        p.add_argument("--cwd", default=None)
+        a = p.parse_args(rest)
+
+        env = dict(os.environ)
+        env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
+        env["CHAOTING_DIR"] = CHAOTING_DIR
+
+        claude_cmd = ["claude", "--print", "--dangerously-skip-permissions",
+                      "--max-turns", str(a.max_turns), a.prompt]
+
+        import subprocess as sp
+        run_cwd = a.cwd or CHAOTING_DIR
+        try:
+            result = sp.run(
+                claude_cmd,
+                env=env,
+                cwd=run_cwd,
+                capture_output=True,
+                text=True,
+                timeout=a.timeout,
+            )
+            out({
+                "ok": result.returncode == 0,
+                "zouzhe_id": a.zouzhe_id,
+                "returncode": result.returncode,
+                "stdout": result.stdout[-3000:] if result.stdout else "",
+                "stderr": result.stderr[-1000:] if result.stderr else "",
+            }, ok=result.returncode == 0)
+        except sp.TimeoutExpired:
+            out({"ok": False, "error": f"timeout after {a.timeout}s",
+                 "zouzhe_id": a.zouzhe_id}, ok=False)
+        except Exception as exc:
+            out({"ok": False, "error": str(exc), "zouzhe_id": a.zouzhe_id}, ok=False)
+
+    else:
+        out({"ok": False, "error": f"unknown subcommand: {subcmd}"}, ok=False)
+
+
 COMMANDS = {
     "new": cmd_new,
     "list": cmd_list,
@@ -1013,6 +1170,7 @@ COMMANDS = {
     "context": cmd_context,
     "vote": cmd_vote,
     "notify": cmd_notify,
+    "teams": cmd_teams,
 }
 
 
