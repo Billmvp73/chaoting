@@ -223,7 +223,7 @@ if [ "$AUTO_CONFIG" = "0" ]; then
 fi
 
 # Ask about model
-DEFAULT_MODEL="anthropic/claude-sonnet-4-6"
+DEFAULT_MODEL="amazon-bedrock/anthropic.claude-sonnet-4-6"
 if [ "$AUTO_CONFIG" = "0" ]; then
     echo ""
     read -rp "Model for agents (Enter for $DEFAULT_MODEL): " USER_MODEL
