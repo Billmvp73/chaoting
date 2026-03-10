@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Load .env from project root (does not override existing env vars)
+# Load .env from CHAOTING_DIR (does not override existing env vars)
 _dotenv_path = os.path.join(CHAOTING_DIR, ".env")
 if os.path.isfile(_dotenv_path):
     with open(_dotenv_path) as _f:
@@ -24,6 +24,7 @@ if os.path.isfile(_dotenv_path):
 # ── workspace 隔离支持（ZZ-20260310-016）──
 # CHAOTING_WORKSPACE: 将 DB/logs/sentinels 隔离到 {workspace}/.chaoting/
 # 不设置时沿用 CHAOTING_DIR（向后兼容）
+# Agents get CHAOTING_WORKSPACE from SOUL.md env block (injected by install.sh)
 _WORKSPACE = os.environ.get("CHAOTING_WORKSPACE", "")
 CHAOTING_DATA_DIR = os.path.join(_WORKSPACE, ".chaoting") if _WORKSPACE else CHAOTING_DIR
 DB_PATH = os.environ.get("CHAOTING_DB_PATH", os.path.join(CHAOTING_DATA_DIR, "chaoting.db"))

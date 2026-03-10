@@ -193,6 +193,42 @@ else
     AGENT_MODEL="${AGENT_MODEL:-$DEFAULT_MODEL}"
 fi
 
+# Helper: inject/update CHAOTING_WORKSPACE env block in a SOUL.md
+_inject_workspace_env() {
+    local soul_file="$1" ws_path="$2" chaoting_dir="$3"
+    local marker="## Chaoting 环境变量"
+    local block
+    block=$(cat <<ENVBLOCK
+
+${marker}
+
+在执行任何 chaoting 命令前，先设置环境变量：
+
+\`\`\`bash
+export CHAOTING_WORKSPACE=${ws_path}
+export CHAOTING_DIR=${chaoting_dir}
+\`\`\`
+ENVBLOCK
+)
+    if grep -qF "$marker" "$soul_file" 2>/dev/null; then
+        # Replace existing block (from marker to next ## or EOF)
+        python3 -c "
+import re, sys
+with open('$soul_file') as f:
+    content = f.read()
+pattern = r'\n*## Chaoting 环境变量.*?(?=\n## |\Z)'
+content = re.sub(pattern, '', content, flags=re.DOTALL)
+with open('$soul_file', 'w') as f:
+    f.write(content.rstrip() + '\n')
+"
+        echo "$block" >> "$soul_file"
+        printf "  [update] %-20s — workspace env updated\n" "$(basename "$(dirname "$soul_file")")"
+    else
+        echo "$block" >> "$soul_file"
+        printf "  [inject] %-20s — workspace env added\n" "$(basename "$(dirname "$soul_file")")"
+    fi
+}
+
 # Create sub-agent workspaces
 CREATED=0
 SKIPPED=0
@@ -202,13 +238,12 @@ for i in "${!SUB_AGENTS[@]}"; do
     soul_src="$SOULS_DIR/${agent_id}.md"
     soul_dst="$ws_dir/SOUL.md"
 
+    mkdir -p "$ws_dir"
     if [ -f "$soul_dst" ]; then
-        printf "  [skip]   %-20s — SOUL.md already exists\n" "$agent_id"
+        printf "  [exists] %-20s — SOUL.md already exists\n" "$agent_id"
         SKIPPED=$((SKIPPED + 1))
     else
-        mkdir -p "$ws_dir"
         if [ -f "$soul_src" ]; then
-            # Replace $CHAOTING_CLI placeholder
             CHAOTING_CLI_PATH="$CHAOTING_DIR/src/chaoting"
             sed "s|\\\$CHAOTING_CLI|${CHAOTING_CLI_PATH}|g; s|\\\$CHAOTING_DIR|${CHAOTING_DIR}|g" "$soul_src" > "$soul_dst"
         else
@@ -217,6 +252,10 @@ for i in "${!SUB_AGENTS[@]}"; do
         fi
         printf "  [create] %-20s → %s\n" "$agent_id" "$soul_dst"
         CREATED=$((CREATED + 1))
+    fi
+    # Inject/update CHAOTING_WORKSPACE env block in SOUL.md
+    if [ "$WORKSPACE_MODE" -eq 1 ] && [ -f "$soul_dst" ]; then
+        _inject_workspace_env "$soul_dst" "$WORKSPACE_PATH" "$CHAOTING_DIR"
     fi
 done
 echo "  Created $CREATED, skipped $SKIPPED."
@@ -238,13 +277,16 @@ case "$CAPCOM_CHOICE" in
     1)
         silijian_ws="$OPENCLAW_STATE_DIR/workspace-silijian"
         silijian_dst="$silijian_ws/SOUL.md"
+        mkdir -p "$silijian_ws"
         if [ -f "$silijian_dst" ]; then
-            echo "  [skip] silijian — SOUL.md already exists"
+            echo "  [exists] silijian — SOUL.md already exists"
         else
-            mkdir -p "$silijian_ws"
             CHAOTING_CLI_PATH="$CHAOTING_DIR/src/chaoting"
             sed "s|\\\$CHAOTING_CLI|${CHAOTING_CLI_PATH}|g; s|\\\$CHAOTING_DIR|${CHAOTING_DIR}|g" "$SOULS_DIR/silijian.md" > "$silijian_dst"
             echo "  [create] silijian → $silijian_dst"
+        fi
+        if [ "$WORKSPACE_MODE" -eq 1 ]; then
+            _inject_workspace_env "$silijian_dst" "$WORKSPACE_PATH" "$CHAOTING_DIR"
         fi
         # Add silijian to agent list for config fragment
         SUB_AGENTS+=(silijian)

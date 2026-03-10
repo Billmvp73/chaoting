@@ -17,7 +17,7 @@ from logging.handlers import RotatingFileHandler
 
 CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Load .env from project root (does not override existing env vars)
+# Load .env from CHAOTING_DIR (does not override existing env vars)
 _dotenv_path = os.path.join(CHAOTING_DIR, ".env")
 if os.path.isfile(_dotenv_path):
     with open(_dotenv_path) as _f:
@@ -28,14 +28,14 @@ if os.path.isfile(_dotenv_path):
                 if _k.strip() not in os.environ:
                     os.environ[_k.strip()] = _v.strip()
 
-DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
-CHAOTING_CLI = os.path.join(CHAOTING_DIR, "src", "chaoting") if os.path.isfile(os.path.join(CHAOTING_DIR, "src", "chaoting")) else os.path.join(CHAOTING_DIR, "chaoting")
-
 # ── workspace 隔离支持（ZZ-20260310-016）──
 # CHAOTING_WORKSPACE 设置后 DB/logs/sentinels 隔离到 {workspace}/.chaoting/
+# Dispatcher gets CHAOTING_WORKSPACE from systemd Environment=
 _WORKSPACE = os.environ.get("CHAOTING_WORKSPACE", "")
 CHAOTING_DATA_DIR = os.path.join(_WORKSPACE, ".chaoting") if _WORKSPACE else CHAOTING_DIR
+
 DB_PATH = os.environ.get("CHAOTING_DB_PATH", os.path.join(CHAOTING_DATA_DIR, "chaoting.db"))
+CHAOTING_CLI = os.path.join(CHAOTING_DIR, "src", "chaoting") if os.path.isfile(os.path.join(CHAOTING_DIR, "src", "chaoting")) else os.path.join(CHAOTING_DIR, "chaoting")
 
 # ── 门下省封驳上限（超过此次数后 escalate 至司礼监，而非 failed）──
 # 皇上通过 CLI `chaoting revise` 下旨的次数不受此限制
