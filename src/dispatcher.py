@@ -492,6 +492,14 @@ def format_revising_message(zouzhe) -> str:
     V0.4 修复（ZZ-20260310-013 RC-1）：
     - 路径 A（menxia 封驳）：从 plan_history 读取 jishi 意见
     - 路径 B（皇上/silijian exec_revise）：从 revise_history 读取返工原因（最高优先级）
+
+    V0.4.1 修复（ZZ-20260310-029）：
+    - 原 bug：只要曾经有 emperor_revise（exec_revise_count > 0），所有后续 revising
+      （包括 jishi gate_reject 触发的）均走路径 B，导致 jishi 封驳意见完全不传达给中书省
+    - 修复：增加 last_round_has_nogo 检查：若 plan_history[-1] 含 nogo 投票，
+      说明本次触发是 gate_reject → 强制走路径 A（含 emperor 背景）
+    - 配合 cmd_revise 的 plan_history = NULL 清空：确保 emperor_revise 时路径判断不被
+      旧 nogo 数据干扰
     """
     # ── 路径 B 优先：检查 revise_history（皇上/silijian revise 原因）──
     revise_hist = []
@@ -501,7 +509,21 @@ def format_revising_message(zouzhe) -> str:
         pass
     exec_revise_count = zouzhe.get("exec_revise_count") or 0
 
-    if revise_hist and exec_revise_count > 0:
+    # ── ZZ-20260310-029 fix：判断本次 revising 实际触发原因 ──
+    # gate_reject 会将 nogo 投票 archive 到 plan_history[-1]
+    # emperor_revise 会清空 plan_history（cmd_revise 修复配合）
+    # 若 plan_history[-1] 有 nogo → 本次是 gate_reject → 必须走路径 A
+    _plan_hist_raw = []
+    try:
+        _plan_hist_raw = json.loads(zouzhe.get("plan_history") or "[]")
+    except Exception:
+        pass
+    _last_round_has_nogo = bool(_plan_hist_raw) and any(
+        v.get("vote") == "nogo"
+        for v in _plan_hist_raw[-1].get("votes", [])
+    )
+
+    if revise_hist and exec_revise_count > 0 and not _last_round_has_nogo:
         latest = revise_hist[-1]
         revise_reason = latest.get("reason", "(无原因)")
         revised_by = latest.get("revised_by", "silijian")
@@ -544,7 +566,7 @@ def format_revising_message(zouzhe) -> str:
             f"  {CHAOTING_CLI} plan {zouzhe['id']} '{{new_plan_json}}'"
         )
 
-    # ── 路径 A（jishi 封驳）── 原有逻辑保持不变
+    # ── 路径 A（jishi 封驳）── 包含 jishi 封驳意见；若有 emperor 背景则附加
     history = json.loads(zouzhe["plan_history"]) if zouzhe["plan_history"] else []
     if not history:
         return (
@@ -577,6 +599,16 @@ def format_revising_message(zouzhe) -> str:
     if go_lines:
         parts.append("")
         parts.extend(go_lines)
+
+    # ── ZZ-20260310-029：若有皇上旨意背景，附加在封驳消息末尾（不覆盖，作为上下文）──
+    if revise_hist and exec_revise_count > 0:
+        emperor_bg = revise_hist[-1].get("reason", "")[:300]
+        parts.append(
+            f"\n【历史背景：皇上已下旨 {exec_revise_count} 次（当前任务方向）】\n"
+            f"{emperor_bg}\n"
+            f"⚠️ 注意：以上是任务整体方向，但本次首要任务是修复上方封驳意见。"
+        )
+
     parts.append(
         f"\n请修改方案后重新提交:\n"
         f"  {CHAOTING_CLI} pull {zouzhe['id']}\n"
