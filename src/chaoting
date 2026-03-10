@@ -1249,6 +1249,256 @@ def cmd_fail(args):
     out({"ok": True, "zouzhe_id": zid, "state": "failed"})
 
 
+def cmd_decide(args):
+    """司礼监裁决 escalated 奏折：approve / reject / revise。
+
+    Usage:
+      chaoting decide <zouzhe_id> approve '<reason>'   # 准奏 → executing（跳过门下省）
+      chaoting decide <zouzhe_id> reject  '<reason>'   # 驳回 → failed
+      chaoting decide <zouzhe_id> revise  '<reason>'   # 返工 → revising（中书省重新规划）
+
+    Permission: 仅 silijian（司礼监）。
+    State: 奏折必须处于 escalated 状态。
+
+    State transitions:
+      approve: escalated → executing（dispatcher 下次 poll 自动派发执行部门）
+      reject:  escalated → failed
+      revise:  escalated → revising（planning_version+1, plan=NULL, plan_history=NULL, revise_count=0）
+    """
+    if len(args) < 3:
+        out({
+            "ok": False,
+            "error": (
+                "usage: chaoting decide <zouzhe_id> <approve|reject|revise> '<reason>'\n"
+                "  approve — 准奏，跳过门下省直接进入 executing\n"
+                "  reject  — 驳回，进入 failed\n"
+                "  revise  — 退回中书省重新规划，进入 revising"
+            ),
+        }, ok=False)
+
+    zid = args[0]
+    verdict = args[1].lower()
+    reason = args[2]
+
+    if verdict not in ("approve", "reject", "revise"):
+        out({
+            "ok": False,
+            "error": f"无效裁决：'{verdict}'，必须为 approve / reject / revise",
+        }, ok=False)
+
+    # Permission check: only silijian
+    caller = os.environ.get("OPENCLAW_AGENT_ID", "")
+    if caller != "silijian":
+        out({
+            "ok": False,
+            "error": f"权限不足：chaoting decide 仅限司礼监执行（当前身份: '{caller}'）",
+        }, ok=False)
+
+    db = get_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+
+        row = db.execute("SELECT * FROM zouzhe WHERE id = ?", (zid,)).fetchone()
+        if not row:
+            db.execute("ROLLBACK")
+            db.close()
+            out({"ok": False, "error": f"zouzhe {zid} not found"}, ok=False)
+
+        row = dict(row)
+
+        if row["state"] != "escalated":
+            db.execute("ROLLBACK")
+            db.close()
+            out({
+                "ok": False,
+                "error": f"chaoting decide 仅适用于 escalated 状态，当前状态: '{row['state']}'",
+                "hint": (
+                    "escalated 状态由门下省三次封驳后触发。"
+                    "如需返工 done 状态的奏折，请使用 chaoting revise。"
+                ),
+            }, ok=False)
+
+        assigned_agent = row.get("assigned_agent")
+        thread_id = row.get("discord_thread_id")
+        title = row.get("title", "")
+
+        if verdict == "approve":
+            # ── approve: escalated → executing ──
+            affected = db.execute(
+                "UPDATE zouzhe SET state = 'executing', "
+                "dispatched_at = NULL, "
+                "error = NULL, "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+                "WHERE id = ? AND state = 'escalated'",
+                (zid,),
+            ).rowcount
+            if affected == 0:
+                db.execute("ROLLBACK")
+                db.close()
+                out({"ok": False, "error": "状态冲突：CAS 失败，奏折不再是 escalated"}, ok=False)
+
+            db.execute(
+                "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+                "VALUES (?, 'silijian', ?, 'decide_approve', ?)",
+                (zid, assigned_agent or "dispatcher", f"司礼监裁决准奏（跳过门下省）：{reason[:200]}"),
+            )
+            db.commit()
+            db.close()
+
+            zouzhe_log(zid, "silijian", "DECIDE_APPROVE",
+                       "⚖️ 司礼监裁决：准奏（跳过门下省，直接执行）",
+                       reason=reason)
+
+            try:
+                send_discord(zid, (
+                    f"⚖️ **司礼监裁决：准奏**\n\n"
+                    f"奏折：`{zid}` — {title}\n"
+                    f"裁决：跳过门下省审核，直接进入执行\n\n"
+                    f"**【裁决理由】**\n{reason}\n\n"
+                    f"▶️ 执行部门（{assigned_agent or '待定'}）即将收到派发通知。"
+                ), thread_id=thread_id)
+            except Exception as e:
+                print(f"[WARN] decide approve discord notify failed: {e}", file=sys.stderr)
+
+            out({
+                "ok": True,
+                "zouzhe_id": zid,
+                "verdict": "approve",
+                "state": "executing",
+                "next": f"dispatcher 将在下次 poll 中派发 {assigned_agent or '执行部门'}",
+            })
+
+        elif verdict == "reject":
+            # ── reject: escalated → failed ──
+            affected = db.execute(
+                "UPDATE zouzhe SET state = 'failed', "
+                "error = ?, "
+                "dispatched_at = NULL, "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+                "WHERE id = ? AND state = 'escalated'",
+                (f"司礼监裁决驳回：{reason}", zid),
+            ).rowcount
+            if affected == 0:
+                db.execute("ROLLBACK")
+                db.close()
+                out({"ok": False, "error": "状态冲突：CAS 失败，奏折不再是 escalated"}, ok=False)
+
+            db.execute(
+                "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+                "VALUES (?, 'silijian', 'dispatcher', 'decide_reject', ?)",
+                (zid, f"司礼监裁决驳回：{reason[:200]}"),
+            )
+            db.commit()
+            db.close()
+
+            zouzhe_log(zid, "silijian", "DECIDE_REJECT",
+                       "⚖️ 司礼监裁决：驳回（进入 failed）",
+                       reason=reason)
+
+            try:
+                send_discord(zid, (
+                    f"⚖️ **司礼监裁决：驳回**\n\n"
+                    f"奏折：`{zid}` — {title}\n"
+                    f"裁决：驳回，进入 failed 状态\n\n"
+                    f"**【裁决理由】**\n{reason}"
+                ), thread_id=thread_id)
+            except Exception as e:
+                print(f"[WARN] decide reject discord notify failed: {e}", file=sys.stderr)
+
+            out({
+                "ok": True,
+                "zouzhe_id": zid,
+                "verdict": "reject",
+                "state": "failed",
+            })
+
+        else:  # revise
+            # ── revise: escalated → revising（中书省重新规划）──
+            affected = db.execute(
+                "UPDATE zouzhe SET state = 'revising', "
+                "plan = NULL, "
+                "plan_history = NULL, "
+                "revise_count = 0, "
+                "planning_version = planning_version + 1, "
+                "dispatched_at = NULL, "
+                "error = NULL, "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+                "WHERE id = ? AND state = 'escalated'",
+                (zid,),
+            ).rowcount
+            if affected == 0:
+                db.execute("ROLLBACK")
+                db.close()
+                out({"ok": False, "error": "状态冲突：CAS 失败，奏折不再是 escalated"}, ok=False)
+
+            # 写入 revise_history 记录（与 cmd_revise 保持一致）
+            existing_history = []
+            if row.get("revise_history"):
+                try:
+                    existing_history = json.loads(row["revise_history"])
+                except Exception:
+                    pass
+            new_entry = {
+                "round": (row.get("exec_revise_count") or 0) + 1,
+                "reason": reason,
+                "revised_by": "silijian",
+                "revised_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+                "via": "decide_revise",
+            }
+            existing_history.append(new_entry)
+
+            db.execute(
+                "UPDATE zouzhe SET revise_history = ?, "
+                "exec_revise_count = exec_revise_count + 1, "
+                "last_revise_reason = ?, "
+                "total_revise_rounds = COALESCE(total_revise_rounds, 0) + 1 "
+                "WHERE id = ?",
+                (json.dumps(existing_history, ensure_ascii=False), reason[:500], zid),
+            )
+            db.execute(
+                "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+                "VALUES (?, 'silijian', 'zhongshu', 'decide_revise', ?)",
+                (zid, f"司礼监裁决返工，退回中书省重新规划：{reason[:200]}"),
+            )
+            db.commit()
+            db.close()
+
+            zouzhe_log(zid, "silijian", "DECIDE_REVISE",
+                       "⚖️ 司礼监裁决：返工（退回中书省）",
+                       reason=reason)
+
+            try:
+                send_discord(zid, (
+                    f"⚖️ **司礼监裁决：返工**\n\n"
+                    f"奏折：`{zid}` — {title}\n"
+                    f"裁决：退回中书省重新规划\n\n"
+                    f"**【裁决理由 / 新方向】**\n{reason}\n\n"
+                    f"📋 中书省即将收到新的规划指令。"
+                ), thread_id=thread_id)
+            except Exception as e:
+                print(f"[WARN] decide revise discord notify failed: {e}", file=sys.stderr)
+
+            out({
+                "ok": True,
+                "zouzhe_id": zid,
+                "verdict": "revise",
+                "state": "revising",
+                "exec_revise_count": (row.get("exec_revise_count") or 0) + 1,
+                "next": "dispatcher 将在下次 poll 中将方案返回中书省重新规划",
+            })
+
+    except Exception as exc:
+        try:
+            db.execute("ROLLBACK")
+        except Exception:
+            pass
+        try:
+            db.close()
+        except Exception:
+            pass
+        out({"ok": False, "error": f"decide 异常: {exc}"}, ok=False)
+
+
 def cmd_context(args):
     if len(args) < 3:
         out({"ok": False, "error": "usage: chaoting context <agent_role> <key> <value> [--source ZZ-...]"}, ok=False)
@@ -1649,6 +1899,7 @@ COMMANDS = {
     "status": cmd_status,
     "revise": cmd_revise,
     "resume": cmd_resume,
+    "decide": cmd_decide,
     "pull": cmd_pull,
     "plan": cmd_plan,
     "progress": cmd_progress,
