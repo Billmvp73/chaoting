@@ -21,7 +21,12 @@ if os.path.isfile(_dotenv_path):
                 if _k.strip() not in os.environ:
                     os.environ[_k.strip()] = _v.strip()
 
-DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
+# ── workspace 隔离支持（ZZ-20260310-016）──
+# CHAOTING_WORKSPACE: 将 DB/logs/sentinels 隔离到 {workspace}/.chaoting/
+# 不设置时沿用 CHAOTING_DIR（向后兼容）
+_WORKSPACE = os.environ.get("CHAOTING_WORKSPACE", "")
+CHAOTING_DATA_DIR = os.path.join(_WORKSPACE, ".chaoting") if _WORKSPACE else CHAOTING_DIR
+DB_PATH = os.environ.get("CHAOTING_DB_PATH", os.path.join(CHAOTING_DATA_DIR, "chaoting.db"))
 OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "themachine")
 
 # Shared audit log module
@@ -1329,7 +1334,7 @@ def cmd_teams(args):
         p.add_argument("zouzhe_id")
         p.add_argument("teammate_id")
         a = p.parse_args(rest)
-        data = read_sentinel(CHAOTING_DIR, a.zouzhe_id, a.teammate_id)
+        data = read_sentinel(CHAOTING_DATA_DIR, a.zouzhe_id, a.teammate_id)
         if data:
             out({"ok": True, **data})
         else:
@@ -1342,8 +1347,8 @@ def cmd_teams(args):
         p.add_argument("zouzhe_id")
         p.add_argument("--teammates", nargs="*", default=None)
         a = p.parse_args(rest)
-        teammate_ids = a.teammates or list_sentinels(CHAOTING_DIR, a.zouzhe_id)
-        watcher = SentinelWatcher(a.zouzhe_id, CHAOTING_DIR)
+        teammate_ids = a.teammates or list_sentinels(CHAOTING_DATA_DIR, a.zouzhe_id)
+        watcher = SentinelWatcher(a.zouzhe_id, CHAOTING_DATA_DIR)
         watcher.register(teammate_ids)
         statuses = watcher.status()
         summary = {
@@ -1364,7 +1369,7 @@ def cmd_teams(args):
         p.add_argument("--timeout", type=int, default=600)
         p.add_argument("--poll", type=float, default=2.0)
         a = p.parse_args(rest)
-        watcher = SentinelWatcher(a.zouzhe_id, CHAOTING_DIR)
+        watcher = SentinelWatcher(a.zouzhe_id, CHAOTING_DATA_DIR)
         watcher.register(a.teammates)
         result = watcher.wait_all(timeout=a.timeout, poll_interval=a.poll)
         out({"ok": result["status"] == "complete", **result})
@@ -1374,7 +1379,7 @@ def cmd_teams(args):
         p = argparse.ArgumentParser(prog="chaoting teams sentinel-list")
         p.add_argument("zouzhe_id")
         a = p.parse_args(rest)
-        items = list_sentinels(CHAOTING_DIR, a.zouzhe_id)
+        items = list_sentinels(CHAOTING_DATA_DIR, a.zouzhe_id)
         out({"ok": True, "zouzhe_id": a.zouzhe_id, "sentinels": items})
 
     # ── sentinel-cleanup ──
@@ -1382,7 +1387,7 @@ def cmd_teams(args):
         p = argparse.ArgumentParser(prog="chaoting teams sentinel-cleanup")
         p.add_argument("zouzhe_id")
         a = p.parse_args(rest)
-        n = cleanup_sentinels(CHAOTING_DIR, a.zouzhe_id)
+        n = cleanup_sentinels(CHAOTING_DATA_DIR, a.zouzhe_id)
         out({"ok": True, "zouzhe_id": a.zouzhe_id, "deleted": n})
 
     # ── run ──
@@ -1433,8 +1438,8 @@ def cmd_teams(args):
         p.add_argument("--teammates", nargs="*", default=None)
         a = p.parse_args(rest)
         from sentinel import SentinelWatcher, list_sentinels
-        teammate_ids = a.teammates or list_sentinels(CHAOTING_DIR, a.zouzhe_id)
-        watcher = SentinelWatcher(a.zouzhe_id, CHAOTING_DIR)
+        teammate_ids = a.teammates or list_sentinels(CHAOTING_DATA_DIR, a.zouzhe_id)
+        watcher = SentinelWatcher(a.zouzhe_id, CHAOTING_DATA_DIR)
         watcher.register(teammate_ids)
         m = watcher.get_metrics()
         out({"ok": True, **m})
@@ -1450,8 +1455,8 @@ def cmd_teams(args):
         p.add_argument("--timeout", type=int, default=600)
         a = p.parse_args(rest)
         from sentinel import SentinelWatcher, list_sentinels, SENTINEL_DONE, SENTINEL_FAILED, SENTINEL_TIMEOUT
-        teammate_ids = a.teammates or list_sentinels(CHAOTING_DIR, a.zouzhe_id)
-        watcher = SentinelWatcher(a.zouzhe_id, CHAOTING_DIR)
+        teammate_ids = a.teammates or list_sentinels(CHAOTING_DATA_DIR, a.zouzhe_id)
+        watcher = SentinelWatcher(a.zouzhe_id, CHAOTING_DATA_DIR)
         watcher.register(teammate_ids)
 
         if not a.follow:

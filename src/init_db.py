@@ -5,7 +5,11 @@ import os
 import sqlite3
 
 CHAOTING_DIR = os.environ.get("CHAOTING_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
+
+# ── workspace 隔离支持（ZZ-20260310-016）──
+_WORKSPACE = os.environ.get("CHAOTING_WORKSPACE", "")
+_DATA_DIR = os.path.join(_WORKSPACE, ".chaoting") if _WORKSPACE else CHAOTING_DIR
+DB_PATH = os.environ.get("CHAOTING_DB_PATH", os.path.join(_DATA_DIR, "chaoting.db"))
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;

@@ -31,6 +31,12 @@ if os.path.isfile(_dotenv_path):
 DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
 CHAOTING_CLI = os.path.join(CHAOTING_DIR, "src", "chaoting") if os.path.isfile(os.path.join(CHAOTING_DIR, "src", "chaoting")) else os.path.join(CHAOTING_DIR, "chaoting")
 
+# ── workspace 隔离支持（ZZ-20260310-016）──
+# CHAOTING_WORKSPACE 设置后 DB/logs/sentinels 隔离到 {workspace}/.chaoting/
+_WORKSPACE = os.environ.get("CHAOTING_WORKSPACE", "")
+CHAOTING_DATA_DIR = os.path.join(_WORKSPACE, ".chaoting") if _WORKSPACE else CHAOTING_DIR
+DB_PATH = os.environ.get("CHAOTING_DB_PATH", os.path.join(CHAOTING_DATA_DIR, "chaoting.db"))
+
 # ── 门下省封驳上限（超过此次数后 escalate 至司礼监，而非 failed）──
 # 皇上通过 CLI `chaoting revise` 下旨的次数不受此限制
 GATE_REJECT_LIMIT = int(os.environ.get("CHAOTING_GATE_REJECT_LIMIT", "3"))
