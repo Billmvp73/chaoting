@@ -14,7 +14,8 @@
 | ❌ **禁止直接 commit 到 master** | master 分支只接受通过 PR 合并的内容 |
 | ✅ **所有开发在 feature branch 上进行** | 每个奏折对应一个独立分支 |
 | ✅ **一奏折一 Branch 一 PR** | 同一奏折全生命周期使用同一个 branch 和同一个 PR，返工时继续在原 branch 修改并 push |
-| ✅ **Issue + PR 双联** | 每个奏折对应一个 GitHub Issue（记录要做什么）和一个 PR（记录怎么做），PR 用 `Closes #N` 关联 Issue |
+| ✅ **Issue + PR 双联** | 每个奏折对应一个 GitHub Issue（记录要做什么）和一个 PR（记录怎么做），PR 用 `Closes #N` 关联 Issue，Issue 中须 mention 对应 PR |
+| 🚫 **无 Issue 的 PR 不得 merge** | 司礼监 merge 前须确认 PR body 含有效的 `Closes #N`（Issue 必须存在且开启）；否则打回要求补建 Issue |
 | ✅ **PR 使用 Squash Merge** | 保持 master 历史清洁，每个奏折一个 commit |
 | 🏛️ **Merge 权限仅属司礼监** | 执行部门创建 PR 后等待司礼监 review 和 merge，**禁止自行 merge** |
 | ✅ **Merge 后立即同步本地 master** | 防止分歧积累 |
@@ -175,6 +176,17 @@ gh pr create \
 
 **关键词说明：** `Closes #N` 会在 PR merge 后自动关闭 Issue #N（也可用 `Fixes #N` / `Resolves #N`）。
 
+#### 3c. 在 Issue 中 mention PR（双向关联）
+
+PR 创建成功后，在 Issue 中追加评论，完成双向关联：
+
+```bash
+# 记录 PR 创建后返回的 PR 编号（如 #43）
+gh issue comment <issue-number> --body "Implemented in PR #<pr-number>"
+```
+
+这样在 GitHub 界面上，Issue 和 PR 互相可见，便于追踪。
+
 ### 步骤四：等待 Review，按意见修改
 
 ```bash
@@ -193,8 +205,9 @@ git push origin pr/ZZ-XXXXXXXX-NNN-feature-name
 3. 如有修改意见，在同一 feature branch 上追加 commit 后 push
 
 司礼监 merge 时：
-1. 确认 PR 通过 Review
-2. 选择 **"Squash and merge"**（不要用 Merge commit 或 Rebase）
+1. **确认 PR body 含有效的 `Closes #N`**（Issue 必须存在且处于 open 状态）——无 Issue 的 PR 打回，要求补建
+2. 确认 PR 通过 Review
+3. 选择 **"Squash and merge"**（不要用 Merge commit 或 Rebase）
 3. Squash commit 消息格式：
    ```
    feat: <功能描述> (ZZ-XXXXXXXX-NNN)

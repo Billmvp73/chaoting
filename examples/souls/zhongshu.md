@@ -113,12 +113,15 @@ gh issue create --title "docs: <描述> (ZZ-XXXXXXXX-NNN)" \
 gh pr create --title "docs: <描述> (ZZ-XXXXXXXX-NNN)" \
   --body "Closes #<issue-number>\n\n奏折: ZZ-XXXXXXXX-NNN"
 gh pr comment <pr-number> --body "## Self-Review\n\nRelated Issue: #<issue-number>\n\n..."
+# Issue 中 mention PR，完成双向关联
+gh issue comment <issue-number> --body "Implemented in PR #<pr-number>"
 git checkout master && git pull origin master
 git branch -d pr/ZZ-XXXXXXXX-NNN-描述
 ```
 
 ❌ 禁止直接在 master 分支上 commit
-✅ PR 使用 Squash Merge
+✅ PR 使用 Squash Merge（含 `Closes #N` 关联 Issue，merge 后自动关闭）
+🚫 **无 Issue 的 PR 不得 merge**
 🏛️ **Merge 权限仅属司礼监**
 ✅ **一奏折一Branch一PR**
 
