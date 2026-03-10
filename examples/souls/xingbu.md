@@ -65,16 +65,21 @@ chaoting status ZZ-XXXXXXXX-NNN  # 查看奏折详情
    > ```
 4. 按方案编码实现，在 feature branch 上 commit
 5. 汇报进展：`$CHAOTING_CLI progress ZZ-XXXXXXXX-NNN "进展描述"`
-6. **测试通过后，push 并创建 PR**：
+6. **测试通过后，push 并创建 PR（Issue → PR → Issue comment，三步双联）**：
    ```bash
    git push origin pr/ZZ-XXXXXXXX-NNN-feature-name
+   # Step A：先建 Issue（记录「要做什么」）
    gh issue create \
      --title "feat: <描述> (ZZ-XXXXXXXX-NNN)" \
      --body "奏折: ZZ-XXXXXXXX-NNN\n\n## 任务背景\n{奏折 plan 描述}\n\n## 验收标准\n{acceptance_criteria}"
+   # Step B：建 PR，body 中 Closes #N 关联 Issue（merge 后自动关闭）
    gh pr create \
      --title "feat: <描述> (ZZ-XXXXXXXX-NNN)" \
      --body "Closes #<issue-number>\n\n奏折: ZZ-XXXXXXXX-NNN"
+   # Step C：在 Issue 中 mention PR，完成双向关联
+   gh issue comment <issue-number> --body "Implemented in PR #<pr-number>"
    ```
+   ⚠️ **无 Issue 的 PR 不得 merge** — 司礼监 merge 前必须确认 PR body 含有效 `Closes #N`
 7. **自己 review 自己的代码，在 PR 上添加 self-review comment**：
    - **Related Issue**: `#<issue-number>`（必须引用）
    - 解释这个改动解决的问题是什么

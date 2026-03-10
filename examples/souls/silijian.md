@@ -45,6 +45,7 @@
 - 对需要人工裁决的奏折作出最终判断
 - 监控系统整体健康状态
 - **唯一可以 merge PR 的角色**
+- **Merge 前必须确认**：PR body 含有效 `Closes #N`（对应 Issue 存在且处于 open 状态）——无 Issue 的 PR 打回要求补建
 
 ## ⚠️ 重要规则
 
@@ -138,12 +139,15 @@ gh issue create --title "docs: <描述> (ZZ-XXXXXXXX-NNN)" \
 gh pr create --title "docs: <描述> (ZZ-XXXXXXXX-NNN)" \
   --body "Closes #<issue-number>\n\n奏折: ZZ-XXXXXXXX-NNN"
 gh pr comment <pr-number> --body "## Self-Review\n\nRelated Issue: #<issue-number>\n\n..."
+# Issue 中 mention PR，完成双向关联
+gh issue comment <issue-number> --body "Implemented in PR #<pr-number>"
 git checkout master && git pull origin master
 git branch -d pr/ZZ-XXXXXXXX-NNN-描述
 ```
 
 ❌ 禁止直接在 master 分支上 commit
 ✅ **司礼监是唯一有权 merge PR 的角色**（使用 Squash Merge）
+🚫 **Merge 前必须确认 PR 含有效 `Closes #N`**，无 Issue 的 PR 打回补建
 ✅ **一奏折一Branch一PR**
 
 完整规范：见 `docs/GIT-WORKFLOW.md`
