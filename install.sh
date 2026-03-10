@@ -144,7 +144,14 @@ if [ "$DRY_RUN" = "1" ]; then
         echo "  workspace-${SUB_AGENTS[$i]}/SOUL.md  (${AGENT_NAMES[$i]} ${AGENT_EMOJIS[$i]})"
     done
     echo ""
-    echo "[dry-run] Would generate openclaw-agents-fragment.json"
+    CONFIG_FILE=""
+    for candidate in "$OPENCLAW_STATE_DIR/themachine.json" "$OPENCLAW_STATE_DIR/openclaw.json"; do
+        [ -f "$candidate" ] && CONFIG_FILE="$candidate" && break
+    done
+    echo "[dry-run] Would merge ${#SUB_AGENTS[@]} agents into ${CONFIG_FILE:-<not found>}"
+    if [ "$WORKSPACE_MODE" -eq 1 ]; then
+        echo "[dry-run] Would copy src/, docs/, examples/souls/ to $CHAOTING_DATA_DIR"
+    fi
     echo "[dry-run] No changes made."
     exit 0
 fi
@@ -352,76 +359,83 @@ case "$CAPCOM_CHOICE" in
 esac
 
 # ============================================================
-# Step 4: Generate config fragment
+# Step 4: Merge agent config into gateway config
 # ============================================================
 echo ""
-echo "[4/4] Generating OpenClaw agent config..."
+echo "[4/4] Registering agents in gateway config..."
 
-FRAGMENT="$CHAOTING_DIR/openclaw-agents-fragment.json"
-{
-    echo "{"
-    echo "  \"_comment\": \"Merge these into your openclaw.json under agents.list\","
-    echo "  \"_generated_at\": \"$(date -Iseconds)\","
-    echo "  \"agents\": ["
+# Detect config file: themachine.json or openclaw.json
+CONFIG_FILE=""
+for candidate in "$OPENCLAW_STATE_DIR/themachine.json" "$OPENCLAW_STATE_DIR/openclaw.json"; do
+    if [ -f "$candidate" ]; then
+        CONFIG_FILE="$candidate"
+        break
+    fi
+done
+
+if [ -z "$CONFIG_FILE" ]; then
+    echo "  ⚠️  No gateway config found in $OPENCLAW_STATE_DIR/ (themachine.json or openclaw.json)"
+    echo "  Skipping agent registration. Add agents manually after creating the config."
+else
+    # Build agent list as JSON and merge via python3 (no jq dependency)
+    _AGENT_JSON="["
     last_idx=$(( ${#SUB_AGENTS[@]} - 1 ))
     for i in "${!SUB_AGENTS[@]}"; do
         agent_id="${SUB_AGENTS[$i]}"
         agent_name="${AGENT_NAMES[$i]}"
         agent_emoji="${AGENT_EMOJIS[$i]}"
         ws_path="$OPENCLAW_STATE_DIR/workspace-${agent_id}"
-        comma=","
-        [ "$i" -eq "$last_idx" ] && comma=""
-        cat << AGENT
-    {
-      "id": "${agent_id}",
-      "workspace": "${ws_path}",
-      "model": "${AGENT_MODEL}",
-      "identity": { "name": "${agent_name}", "emoji": "${agent_emoji}" }
-    }${comma}
-AGENT
+        _AGENT_JSON+=$(printf '{"id":"%s","workspace":"%s","model":"%s","identity":{"name":"%s","emoji":"%s"}}' \
+            "$agent_id" "$ws_path" "$AGENT_MODEL" "$agent_name" "$agent_emoji")
+        [ "$i" -lt "$last_idx" ] && _AGENT_JSON+=","
     done
-    echo "  ]"
-    echo "}"
-} > "$FRAGMENT"
+    _AGENT_JSON+="]"
 
-echo "  Config fragment: $FRAGMENT"
+    BACKUP="$CONFIG_FILE.bak.$(date +%Y%m%d-%H%M%S)"
+    cp "$CONFIG_FILE" "$BACKUP"
 
-# Auto-merge if requested and jq available
-if [ "$AUTO_CONFIG" = "1" ]; then
-    CONFIG_FILE="$OPENCLAW_STATE_DIR/openclaw.json"
-    if [ -f "$CONFIG_FILE" ] && command -v jq >/dev/null 2>&1; then
-        BACKUP="$CONFIG_FILE.bak.$(date +%Y%m%d-%H%M%S)"
-        cp "$CONFIG_FILE" "$BACKUP"
-        echo "  Backup: $BACKUP"
+    python3 -c "
+import json, sys
 
-        jq --argjson new "$(jq .agents "$FRAGMENT")" \
-            '.agents.list += $new | .agents.list |= unique_by(.id)' \
-            "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"
+config_file = '$CONFIG_FILE'
+new_agents = json.loads('$_AGENT_JSON')
 
-        if python3 -c "import json; json.load(open('${CONFIG_FILE}.tmp'))"; then
-            mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-            echo "  ✅ Merged ${#SUB_AGENTS[@]} agents into $CONFIG_FILE"
-        else
-            rm -f "${CONFIG_FILE}.tmp"
-            echo "  ❌ JSON validation failed, config not modified. Backup at: $BACKUP"
-        fi
-    else
-        [ ! -f "${CONFIG_FILE:-}" ] && echo "  ⚠️  $CONFIG_FILE not found — merge manually."
-        command -v jq >/dev/null 2>&1 || echo "  ⚠️  jq not installed — merge manually."
-        echo "  Fragment: $FRAGMENT"
-    fi
+with open(config_file) as f:
+    cfg = json.load(f)
+
+existing = cfg.setdefault('agents', {}).setdefault('list', [])
+existing_ids = {a['id'] for a in existing}
+
+added = 0
+updated = 0
+for agent in new_agents:
+    if agent['id'] in existing_ids:
+        # Update workspace/model/identity for existing agents
+        for i, e in enumerate(existing):
+            if e['id'] == agent['id']:
+                existing[i].update(agent)
+                break
+        updated += 1
+    else:
+        existing.append(agent)
+        added += 1
+
+with open(config_file, 'w') as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+    f.write('\n')
+
+print(f'  Merged into {config_file}: {added} added, {updated} updated')
+"
+    echo "  Backup: $BACKUP"
 fi
 
 echo ""
-echo "Done! Next steps:"
-echo "  1. Merge agent config:  cat $FRAGMENT"
-echo "     Add to openclaw.json → agents.list, then restart OpenClaw"
-echo "  2. Check dispatcher:    systemctl --user status ${SERVICE_NAME}"
+echo "Done!"
+echo "  Dispatcher: systemctl --user status ${SERVICE_NAME}"
 if [ "$WORKSPACE_MODE" -eq 1 ]; then
-    echo "  3. Workspace data dir:  $CHAOTING_DATA_DIR"
-    echo "     Set CHAOTING_WORKSPACE=$WORKSPACE_PATH in agent env for isolation"
+    echo "  Data dir:   $CHAOTING_DATA_DIR"
 fi
 echo ""
 echo "To uninstall:"
-echo "  systemctl --user disable --now chaoting-dispatcher"
-echo "  rm ~/.config/systemd/user/chaoting-dispatcher.service"
+echo "  systemctl --user disable --now ${SERVICE_NAME}"
+echo "  rm ~/.config/systemd/user/${SERVICE_NAME}.service"
