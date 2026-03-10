@@ -31,6 +31,10 @@ if os.path.isfile(_dotenv_path):
 DB_PATH = os.path.join(CHAOTING_DIR, "chaoting.db")
 CHAOTING_CLI = os.path.join(CHAOTING_DIR, "src", "chaoting") if os.path.isfile(os.path.join(CHAOTING_DIR, "src", "chaoting")) else os.path.join(CHAOTING_DIR, "chaoting")
 
+# ── 门下省封驳上限（超过此次数后 escalate 至司礼监，而非 failed）──
+# 皇上通过 CLI `chaoting revise` 下旨的次数不受此限制
+GATE_REJECT_LIMIT = int(os.environ.get("CHAOTING_GATE_REJECT_LIMIT", "3"))
+
 # Shared audit log module — also used by src/chaoting CLI
 import sys as _sys
 _src_dir = os.path.dirname(os.path.abspath(__file__))
@@ -593,38 +597,52 @@ def check_votes(db, zouzhe):
         _cli_notify(zouzhe["id"], f"✅ 门下省准奏\n\n📜 `{zouzhe['id']}` — {zouzhe['title']}\n🎉 全票通过，进入执行阶段")
     else:
         # Has nogo votes
-        if (zouzhe["revise_count"] or 0) >= 2:
-            # Three strikes → failed (CAS)
+        # ── 门下省封驳上限逻辑（ZZ-20260310-014 v2）──
+        # revise_count 统计门下省封驳次数（0-indexed → 已封驳 N 次）
+        # 当已封驳次数 >= GATE_REJECT_LIMIT-1 时（即本次是第 GATE_REJECT_LIMIT 次），
+        # 不再回中书省，改为 escalate 至司礼监裁决
+        # ⚠️ 注意：此限制仅针对门下省封驳（gate_reject）
+        #    皇上通过 CLI `chaoting revise` 下旨的 exec_revise_count 不受此限制
+        if (zouzhe["revise_count"] or 0) >= GATE_REJECT_LIMIT - 1:
+            # 门下省封驳已达上限 → escalate 至司礼监，不再退回中书省
+            escalated_msg = (
+                f"门下省连续封驳 {GATE_REJECT_LIMIT} 次，已呈司礼监/皇上裁决\n"
+                f"（如皇上有旨意，请使用 `chaoting revise {zouzhe['id']} <旨意>` 下旨，不受此限制）"
+            )
             affected = db.execute(
-                "UPDATE zouzhe SET state = 'failed', "
-                "error = '三驳失败，呈御前裁决', "
+                "UPDATE zouzhe SET state = 'escalated', "
+                "error = ?, "
                 "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
                 "WHERE id = ? AND state = 'reviewing'",
-                (zouzhe["id"],),
+                (escalated_msg, zouzhe["id"]),
             ).rowcount
             if affected == 0:
                 return
             db.execute(
                 "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
-                "VALUES (?, 'menxia', 'dispatcher', 'three_strikes', '三驳失败，呈御前裁决')",
-                (zouzhe["id"],),
+                "VALUES (?, 'menxia', 'silijian', 'escalate', ?)",
+                (zouzhe["id"], f"门下省第 {GATE_REJECT_LIMIT} 次封驳，呈司礼监裁决"),
             )
             db.commit()
-            # Log nogo votes + REJECTED block
+            # Log nogo votes + ESCALATED block
             for v in votes:
                 zouzhe_log(zouzhe["id"], v["jishi_id"], "VOTE",
                            v["vote"].upper(),
                            jishi=v["jishi_id"], reason=(v["reason"] or ""))
-            zouzhe_log(zouzhe["id"], "menxia", "REJECTED",
-                       "⛔ 三驳失败，呈御前裁决",
+            zouzhe_log(zouzhe["id"], "menxia", "GATE_REJECT_ESCALATED",
+                       f"⚠️ 门下省封驳达上限（{GATE_REJECT_LIMIT}次），呈司礼监裁决",
                        content=_format_votes_content(votes))
             zouzhe_log(zouzhe["id"], "menxia", "STATE",
-                       "reviewing -> failed",
-                       actor="menxia", remark="三驳失败，呈御前裁决")
-            log.warning("三驳失败 %s，呈御前裁决", zouzhe["id"])
-            _cli_notify(zouzhe["id"], f"⛔ 三驳失败\n\n📜 `{zouzhe['id']}` — {zouzhe['title']}\n🏛️ 需要人工决断")
+                       "reviewing -> escalated",
+                       actor="menxia", remark=f"gate_reject × {GATE_REJECT_LIMIT} → escalate")
+            log.warning("门下省封驳达上限 %s，escalate → 司礼监", zouzhe["id"])
+            _cli_notify(zouzhe["id"],
+                        f"⚠️ 门下省封驳达上限\n\n"
+                        f"📜 `{zouzhe['id']}` — {zouzhe['title']}\n"
+                        f"🏛️ 已连续封驳 {GATE_REJECT_LIMIT} 次，呈司礼监/皇上裁决\n"
+                        f"💡 皇上可使用 `chaoting revise {zouzhe['id']} <旨意>` 直接下旨（不受封驳次数限制）")
         else:
-            # Archive old plan + votes, enter revising
+            # 封驳未达上限 → archive 并退回中书省重新规划
             archive_entry = {
                 "round": current_round,
                 "plan": json.loads(zouzhe["plan"]) if zouzhe["plan"] else None,
@@ -651,8 +669,8 @@ def check_votes(db, zouzhe):
                 return
             db.execute(
                 "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
-                "VALUES (?, 'menxia', 'zhongshu', 'reject', ?)",
-                (zouzhe["id"], f"封驳（第{current_round}次），退回中书省"),
+                "VALUES (?, 'menxia', 'zhongshu', 'gate_reject', ?)",
+                (zouzhe["id"], f"门下省封驳（第{current_round}次），退回中书省重新规划 ({current_round}/{GATE_REJECT_LIMIT})"),
             )
             db.commit()
             # Log votes for this round

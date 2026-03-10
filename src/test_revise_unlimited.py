@@ -362,6 +362,7 @@ class TestCmdPullReturnsReviseContext(unittest.TestCase):
             "last_revise_reason": "last reason",
             "suspended_at": None,
             "assigned_agent": "gongbu",
+            "planning_version": 1,
         }
 
         with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
