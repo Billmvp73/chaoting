@@ -815,7 +815,31 @@ def poll_and_dispatch():
                         custom_msg = format_revising_message(dict(row))
                     dispatch_agent(agent_role, row["id"], row["timeout_sec"], msg=custom_msg)
 
-        # 2. Detect executing with dispatched_at=NULL (after zhongshu plans)
+        # 2a. Detect planning with dispatched_at=NULL (retry after timeout)
+        rows = db.execute(
+            "SELECT id, assigned_agent, timeout_sec FROM zouzhe "
+            "WHERE state = 'planning' AND dispatched_at IS NULL AND assigned_agent IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            cursor = db.execute(
+                "UPDATE zouzhe SET dispatched_at = strftime('%Y-%m-%dT%H:%M:%S','now'), "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+                "WHERE id = ? AND dispatched_at IS NULL RETURNING id",
+                (row["id"],),
+            )
+            claimed = cursor.fetchone()
+            if claimed:
+                db.commit()
+                db.execute(
+                    "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+                    "VALUES (?, 'dispatcher', ?, 'dispatch', ?)",
+                    (row["id"], row["assigned_agent"], "planning retry dispatch"),
+                )
+                db.commit()
+                log.info("Re-dispatching %s to %s (planning retry)", row["id"], row["assigned_agent"])
+                dispatch_agent(row["assigned_agent"], row["id"], row["timeout_sec"])
+
+        # 2b. Detect executing with dispatched_at=NULL (after zhongshu plans)
         rows = db.execute(
             "SELECT id, assigned_agent, timeout_sec FROM zouzhe "
             "WHERE state = 'executing' AND dispatched_at IS NULL AND assigned_agent IS NOT NULL"
