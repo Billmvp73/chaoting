@@ -1,0 +1,180 @@
+{
+  "version": "1.0",
+  "description": "朝廷各部门 Agent Skill 配置方案 — 基于 ZZ-20260309-045 调研",
+  "configPath": "~/.themachine/themachine.json → agents.list[id=<agent_id>].skills",
+  "format": "skills 字段为字符串数组（allowlist）；omit=继承全部 skill；[] 空数组=无 skill",
+  "agents": {
+    "silijian": {
+      "comment": "司礼监：监察总管 + 任务发起者 + 最终裁决",
+      "skills": [
+        "github",
+        "gh-issues",
+        "discord",
+        "gog",
+        "healthcheck",
+        "skill-creator",
+        "clawhub",
+        "slack",
+        "tmux",
+        "sag",
+        "session-logs",
+        "model-usage",
+        "1password",
+        "voice-call",
+        "weather"
+      ]
+    },
+    "zhongshu": {
+      "comment": "中书省：规划者 + 方案制定",
+      "skills": [
+        "github",
+        "gog",
+        "summarize",
+        "gh-issues",
+        "notion",
+        "obsidian",
+        "gemini",
+        "oracle",
+        "weather"
+      ]
+    },
+    "jishi_tech": {
+      "comment": "技术给事中：技术审核 + 可行性评估",
+      "skills": [
+        "github",
+        "gh-issues",
+        "summarize",
+        "gemini",
+        "oracle",
+        "healthcheck"
+      ]
+    },
+    "jishi_risk": {
+      "comment": "风险给事中：破坏性操作 + 回滚方案 + 副作用评估",
+      "skills": [
+        "github",
+        "healthcheck",
+        "gh-issues",
+        "summarize"
+      ]
+    },
+    "jishi_compliance": {
+      "comment": "合规给事中：安全合规 + 权限边界 + 密钥存储审核",
+      "skills": [
+        "github",
+        "healthcheck",
+        "1password",
+        "gh-issues"
+      ]
+    },
+    "jishi_resource": {
+      "comment": "资源给事中：工时预估 + token 预算 + agent 能力匹配",
+      "skills": [
+        "model-usage",
+        "github",
+        "gog"
+      ]
+    },
+    "bingbu": {
+      "comment": "兵部：编码开发 + Bug 修复 + 单元测试",
+      "skills": [
+        "coding-agent",
+        "github",
+        "gh-issues",
+        "tmux",
+        "healthcheck",
+        "discord",
+        "summarize",
+        "oracle",
+        "1password"
+      ]
+    },
+    "gongbu": {
+      "comment": "工部：运维部署 + systemd + Docker + 日志监控",
+      "skills": [
+        "tmux",
+        "healthcheck",
+        "github",
+        "1password",
+        "discord",
+        "gog",
+        "session-logs",
+        "blogwatcher"
+      ]
+    },
+    "libu": {
+      "comment": "礼部：文档撰写 + CHANGELOG + API 文档 + 发布说明",
+      "skills": [
+        "github",
+        "notion",
+        "summarize",
+        "gh-issues",
+        "gog",
+        "nano-pdf",
+        "obsidian",
+        "bear-notes",
+        "openai-whisper"
+      ]
+    },
+    "libu_hr": {
+      "comment": "吏部：项目管理 + 里程碑规划 + 进度跟踪 + 风险预警",
+      "skills": [
+        "github",
+        "gh-issues",
+        "gog",
+        "notion",
+        "trello",
+        "things-mac",
+        "apple-reminders",
+        "discord",
+        "summarize",
+        "session-logs"
+      ]
+    },
+    "xingbu": {
+      "comment": "刑部：安全审计 + 漏洞扫描 + 权限审计 + 日志取证",
+      "skills": [
+        "healthcheck",
+        "github",
+        "tmux",
+        "1password",
+        "gh-issues",
+        "discord",
+        "session-logs"
+      ]
+    },
+    "hubu": {
+      "comment": "户部：数据处理 + ETL + DB 迁移 + 数据分析",
+      "skills": [
+        "gog",
+        "github",
+        "notion",
+        "summarize",
+        "nano-pdf",
+        "himalaya"
+      ]
+    }
+  },
+  "pendingNewSkills": {
+    "comment": "以下 skill 尚未在 ~/self-project/openclaw/skills/ 中存在，需后续开发",
+    "p1": [
+      { "name": "test-runner", "for": "bingbu", "effort": "S", "desc": "自动运行单元/集成测试" },
+      { "name": "lint-runner", "for": "bingbu", "effort": "S", "desc": "flake8/eslint 代码质量检查" },
+      { "name": "secret-scanner", "for": ["xingbu", "jishi_compliance"], "effort": "S", "desc": "硬编码 secret 扫描" }
+    ],
+    "p2": [
+      { "name": "log-analyzer", "for": "gongbu", "effort": "M", "desc": "系统日志异常模式识别" },
+      { "name": "docker-ctl", "for": "gongbu", "effort": "S", "desc": "Docker 容器管理" },
+      { "name": "db-query", "for": "hubu", "effort": "S", "desc": "安全只读 DB 查询" },
+      { "name": "csv-processor", "for": "hubu", "effort": "S", "desc": "CSV/Excel 处理" },
+      { "name": "diff-analyzer", "for": "jishi_risk", "effort": "S", "desc": "PR diff 危险模式扫描" }
+    ],
+    "p3": [
+      { "name": "mermaid-renderer", "for": "libu", "effort": "S", "desc": "Mermaid 图渲染" },
+      { "name": "sbom-generator", "for": "xingbu", "effort": "M", "desc": "SBOM 生成" },
+      { "name": "task-profiler", "for": "jishi_resource", "effort": "M", "desc": "历史任务耗时分析" },
+      { "name": "dependency-checker", "for": "zhongshu", "effort": "M", "desc": "依赖版本兼容性检查" },
+      { "name": "code-analyzer", "for": "jishi_tech", "effort": "M", "desc": "静态代码分析" }
+    ]
+  }
+}
