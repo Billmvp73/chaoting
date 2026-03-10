@@ -269,9 +269,10 @@ with open('$soul_file', 'w') as f:
     fi
 }
 
-# Create sub-agent workspaces
+# Create/update sub-agent workspaces
+# Always regenerate SOUL.md from template to pick up latest changes and paths.
 CREATED=0
-SKIPPED=0
+UPDATED=0
 for i in "${!SUB_AGENTS[@]}"; do
     agent_id="${SUB_AGENTS[$i]}"
     ws_dir="$OPENCLAW_STATE_DIR/workspace-${agent_id}"
@@ -279,26 +280,24 @@ for i in "${!SUB_AGENTS[@]}"; do
     soul_dst="$ws_dir/SOUL.md"
 
     mkdir -p "$ws_dir"
-    if [ -f "$soul_dst" ]; then
-        printf "  [exists] %-20s — SOUL.md already exists\n" "$agent_id"
-        SKIPPED=$((SKIPPED + 1))
-    else
-        if [ -f "$soul_src" ]; then
-            CHAOTING_CLI_PATH="$CHAOTING_DIR/src/chaoting"
-            sed "s|\\\$CHAOTING_CLI|${CHAOTING_CLI_PATH}|g; s|\\\$CHAOTING_DIR|${CHAOTING_DIR}|g" "$soul_src" > "$soul_dst"
-        else
-            echo "  [warn]   $agent_id — template not found: $soul_src"
-            continue
-        fi
-        printf "  [create] %-20s → %s\n" "$agent_id" "$soul_dst"
-        CREATED=$((CREATED + 1))
+    if [ ! -f "$soul_src" ]; then
+        echo "  [warn]   $agent_id — template not found: $soul_src"
+        continue
     fi
+
+    CHAOTING_CLI_PATH="$CHAOTING_DIR/src/chaoting"
+    label="create"
+    [ -f "$soul_dst" ] && label="update"
+    sed "s|\\\$CHAOTING_CLI|${CHAOTING_CLI_PATH}|g; s|\\\$CHAOTING_DIR|${CHAOTING_DIR}|g" "$soul_src" > "$soul_dst"
+    printf "  [%s] %-20s → %s\n" "$label" "$agent_id" "$soul_dst"
+    [ "$label" = "create" ] && CREATED=$((CREATED + 1)) || UPDATED=$((UPDATED + 1))
+
     # Inject/update CHAOTING_WORKSPACE env block in SOUL.md
-    if [ "$WORKSPACE_MODE" -eq 1 ] && [ -f "$soul_dst" ]; then
+    if [ "$WORKSPACE_MODE" -eq 1 ]; then
         _inject_workspace_env "$soul_dst" "$WORKSPACE_PATH" "$CHAOTING_DIR" "$agent_id"
     fi
 done
-echo "  Created $CREATED, skipped $SKIPPED."
+echo "  Created $CREATED, updated $UPDATED."
 
 # Ask about 司礼监
 echo ""
@@ -318,13 +317,11 @@ case "$CAPCOM_CHOICE" in
         silijian_ws="$OPENCLAW_STATE_DIR/workspace-silijian"
         silijian_dst="$silijian_ws/SOUL.md"
         mkdir -p "$silijian_ws"
-        if [ -f "$silijian_dst" ]; then
-            echo "  [exists] silijian — SOUL.md already exists"
-        else
-            CHAOTING_CLI_PATH="$CHAOTING_DIR/src/chaoting"
-            sed "s|\\\$CHAOTING_CLI|${CHAOTING_CLI_PATH}|g; s|\\\$CHAOTING_DIR|${CHAOTING_DIR}|g" "$SOULS_DIR/silijian.md" > "$silijian_dst"
-            echo "  [create] silijian → $silijian_dst"
-        fi
+        label="create"
+        [ -f "$silijian_dst" ] && label="update"
+        CHAOTING_CLI_PATH="$CHAOTING_DIR/src/chaoting"
+        sed "s|\\\$CHAOTING_CLI|${CHAOTING_CLI_PATH}|g; s|\\\$CHAOTING_DIR|${CHAOTING_DIR}|g" "$SOULS_DIR/silijian.md" > "$silijian_dst"
+        echo "  [$label] silijian → $silijian_dst"
         if [ "$WORKSPACE_MODE" -eq 1 ]; then
             _inject_workspace_env "$silijian_dst" "$WORKSPACE_PATH" "$CHAOTING_DIR" "silijian"
         fi
