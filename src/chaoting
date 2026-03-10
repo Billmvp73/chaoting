@@ -755,24 +755,25 @@ def cmd_revise(args):
         if dup_warning:
             remark_parts.append(f"⚠️ 重复原因（{dup_check['similarity']:.0%} 相似）")
 
+        # ── 审计区分：emperor_revise（皇上下旨）vs gate_reject（门下省封驳）──
+        # liuzhuan action 明确标记来源，便于审计追溯
+        liuzhuan_action = "emperor_revise"
         db.execute(
             "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
-            "VALUES (?, ?, 'zhongshu', 'revise', ?)",
-            (zid, caller, "；".join(remark_parts)),
+            "VALUES (?, ?, 'zhongshu', ?, ?)",
+            (zid, caller, liuzhuan_action, "；".join(remark_parts)),
         )
 
         db.execute("COMMIT")
         db.close()
 
-        zouzhe_log(zid, caller, "STATE_TRANSITION",
-                   f"done → {next_state}（重新规划+评审）",
+        # 皇上旨意明确回显：第 N 次旨意
+        zouzhe_log(zid, caller, "EMPEROR_REVISE",
+                   f"⚠️ 皇上下旨返工（第 {new_count} 次），不受门下省封驳次数限制",
                    actor=caller,
                    reason=reason,
-                   revise_count=new_count,
+                   emperor_revise_count=new_count,
                    total_revise_rounds=new_total_rounds,
-                   votes_archived=len(archived_votes),
-                   dup_detected=dup_check["duplicate"],
-                   dup_similarity=dup_check["similarity"],
                    suspended=will_suspend)
 
         send_discord(
@@ -793,6 +794,10 @@ def cmd_revise(args):
             "planning_version": result["planning_version"],
             "reason": reason,
             "revised_by": caller,
+            # ── 皇上下旨明确回显（ZZ-20260310-014 v2）──
+            # 区分 emperor_revise（无限制）vs gate_reject（门下省封驳，有上限）
+            "revise_type": "emperor_revise",
+            "revise_message": f"皇上下旨返工，不受门下省封驳次数限制，当前是第 {new_count} 次旨意",
         }
         if dup_warning:
             response["warning"] = dup_warning
