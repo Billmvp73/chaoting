@@ -107,6 +107,8 @@ ZOUZHE_NEW_COLUMNS = [
     ("last_revise_reason", "TEXT"),                 # 最后一次返工原因（快速查询用）
     ("suspended_at", "TEXT"),                       # 非空则奏折处于暂停状态（防爆轮触发）
     ("total_revise_rounds", "INTEGER DEFAULT 0"),   # 累计总返工次数（门下省封驳 + exec_revise）
+    # ── V0.4 planning_version 锁定机制（ZZ-20260310-015）──
+    ("planning_version", "INTEGER DEFAULT 1"),      # 每次 revise 时 +1；plan 提交时校验版本匹配
 ]
 
 
