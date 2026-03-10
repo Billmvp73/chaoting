@@ -22,10 +22,21 @@ if os.path.isfile(_dotenv_path):
                     os.environ[_k.strip()] = _v.strip()
 
 # ── workspace 隔离支持（ZZ-20260310-016）──
-# CHAOTING_WORKSPACE: 将 DB/logs/sentinels 隔离到 {workspace}/.chaoting/
-# 不设置时沿用 CHAOTING_DIR（向后兼容）
-# Agents get CHAOTING_WORKSPACE from SOUL.md env block (injected by install.sh)
+# Priority: 1) CHAOTING_WORKSPACE env  2) script path inside .chaoting/  3) CWD walk-up
 _WORKSPACE = os.environ.get("CHAOTING_WORKSPACE", "")
+if not _WORKSPACE:
+    # Auto-detect from script location: {ws}/.chaoting/src/chaoting
+    _script_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if os.path.basename(_script_parent) == ".chaoting":
+        _WORKSPACE = os.path.dirname(_script_parent)
+if not _WORKSPACE:
+    # Auto-detect from CWD: walk up looking for .chaoting/src/
+    _dir = os.getcwd()
+    while _dir != "/":
+        if os.path.isdir(os.path.join(_dir, ".chaoting", "src")):
+            _WORKSPACE = _dir
+            break
+        _dir = os.path.dirname(_dir)
 CHAOTING_DATA_DIR = os.path.join(_WORKSPACE, ".chaoting") if _WORKSPACE else CHAOTING_DIR
 DB_PATH = os.environ.get("CHAOTING_DB_PATH", os.path.join(CHAOTING_DATA_DIR, "chaoting.db"))
 OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "themachine")
