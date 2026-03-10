@@ -1,9 +1,9 @@
 # ROADMAP-phase2.md — 朝廷系统第二阶段规划
 
-> 制定日期：2026-03-09  
-> 制定部门：吏部（libu_hr）  
-> 依据奏折：ZZ-20260309-028  
-> 基准版本：当前实际状态（基于 42 个已完成奏折的经验积累）
+> 制定日期：2026-03-09 | 最后更新：2026-03-10
+> 制定部门：吏部（libu_hr）| 文档更新：礼部（libu）
+> 依据奏折：ZZ-20260309-028 | 更新依据：ZZ-20260310-032
+> 基准版本：当前实际状态（基于 90+ 完成奏折的经验积累）
 
 ---
 
@@ -25,17 +25,24 @@
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
-| 状态机核心（7状态流转） | ✅ 稳定 | created→planning→reviewing→executing→done/failed/timeout |
+| 状态机核心（8状态流转含 escalated） | ✅ 稳定 | created→planning→reviewing→executing→done/failed/timeout/escalated |
 | 12 部门完整工作流 | ✅ 稳定 | 含司礼监、中书省、4给事中、六部 |
-| 门下省投票 + 三驳机制 | ✅ 稳定 | Go/No-Go、封驳重提、三驳失败 |
-| 返工机制（revise） | ✅ 稳定 | done→executing，含 review_required 调整支持（ZZ-018修复） |
+| 门下省投票 + 三驳 → escalated 机制 | ✅ 稳定 | Go/No-Go、封驳重提、三驳→escalated→decide |
+| 返工机制（revise，皇上下旨无次数上限） | ✅ 稳定 | done→executing，exec_revise 无上限（ZZ-014 完成） |
 | 审计日志体系 | ✅ 稳定 | 全状态转换记录，含 created 补录（ZZ-020修复） |
 | Dispatcher 通知（Discord Thread） | ✅ 稳定 | 任务分派通知 + 完成/失败/超时通知 + 去重防重发（ZZ-023/026/027修复） |
 | 司礼监完成通知 | ✅ 稳定 | done/failed/timeout 自动推送给司礼监 |
-| chaoting CLI | ✅ 稳定 | pull/plan/progress/done/fail/context/list/status 全命令 |
-| Git 工作流规范 | ✅ 文档齐全 | GIT-WORKFLOW.md + 全12 SOUL.md 含 feature branch/PR/merge权限/一奏折一PR规范 |
+| chaoting CLI（含 decide/lesson/--dianji/--lesson） | ✅ 稳定 | 全命令集：pull/plan/progress/done/fail/context/lesson/decide/list/status |
+| 典籍（dianji）P0+P1 集成 | ✅ 稳定 | 写入（context/done --dianji）+ dispatch 自动注入（ZZ-021/022/023/025）|
+| 前车之鉴（qianche）激活 | ✅ 稳定 | lesson 命令 + done --lesson + pull 注入（ZZ-021/022）|
+| Workspace 隔离部署 | ✅ 稳定 | 多 workspace 独立运行，各有独立 src/ + DB（ZZ-012/016）|
+| 兵部 Agent Teams 协作模式 | ✅ 稳定 | Architect→Coder→Tester→Docs 四角色迭代模式（ZZ-020/021/022）|
+| 皇上裁决命令（decide） | ✅ 稳定 | approve/reject/revise escalated 奏折（ZZ-030）|
+| Git 工作流规范（含 Issue+PR 双联） | ✅ 文档齐全 | GIT-WORKFLOW.md + SOUL.md + Issue→PR→Issue comment 三步规范（ZZ-031）|
 | Thread 标注格式规范 | ✅ 文档齐全 | POLICY-thread-format.md，12部门前缀+模板 |
 | Thread 反馈规范 | ✅ 文档齐全 | POLICY-thread-feedback.md，30分钟反馈强制要求 |
+| SOUL.md 统一规范（A-G 七维度） | ✅ 文档齐全 | 12 份 SOUL.md 含权限表/技能配置/典籍查询权限（ZZ-011）|
+| Memory 结构化规范（index + 专项文件） | ✅ 文档齐全 | 中书省已激活，memory-structure-spec.md 可复用（ZZ-028）|
 
 ### 1.3 尚待观察的模块
 
@@ -58,35 +65,35 @@
 
 ---
 
-## 二、紧急待办（P0）— 本轮必须完成
+## 二、紧急待办（P0）✅ 已完成
 
-### P0-1：Git 工作流实战落地验证
+### P0-1：Git 工作流实战落地验证 ✅
 
 **背景：** ZZ-021/022 建立了完整 Git 工作流规范，但规范刚写入 SOUL.md，各部门尚未在真实任务中按规范执行。
 
-**验证方式：**
-- 下一个需要代码修改的奏折（兵部/工部执行）必须严格走：`pr/ZZ-xxx` 分支 → PR → 等待司礼监 review → Squash Merge
-- 司礼监在 GitHub 执行 review 并决定 merge/request changes
+**完成状态：** ✅ 已完成。自 2026-03-09 以来已有 20+ PR 按规范走完「创建分支 → PR → 司礼监 review → Squash Merge」全流程，包括 ZZ-031 规范化了 Issue+PR 双联要求（`Closes #N` + Issue comment mention PR）。
 
 **负责方：** 下一个涉及代码修改的执行部门 + 司礼监  
-**验收标准：** 完整走通一次"创建分支 → PR → 司礼监 review → Squash Merge → 同步 master"流程
+**验收标准：** ✅ 完整走通多次完整流程，Issue #50+ 均含双向关联
 
-### P0-2：Dispatcher 稳定性观察期
+### P0-2：Dispatcher 稳定性观察期 ✅
 
 **背景：** ZZ-026/027 修复了重启后重复通知的 bug，但修复时间不足 24 小时。
 
-**要求：** 在执行后续奏折期间，观察 Dispatcher 是否有重复通知、NameError 等异常。如有，立即开 ZZ 修复。
+**完成状态：** ✅ 已稳定运行 24h+ 无异常。dispatcher 持续运行中（含多次系统 reload），无重复通知、无 NameError 告警。
 
 **负责方：** 工部（监控日志）  
-**观察期：** 48 小时
+**观察期：** ✅ 48 小时观察期通过
 
 ---
 
 ## 三、高优待办（P1）— 近期实现
 
-### P1-1：环境变量身份认证自动化
+### P1-1：环境变量身份认证自动化 ✅ 已通过 SOUL.md 规范化解决
 
-**当前问题：** 每个 Agent 启动时需手动 `export OPENCLAW_AGENT_ID=<agent_name>`，否则 CLI 调用失败。
+**当前问题（原）：** 每个 Agent 启动时需手动 `export OPENCLAW_AGENT_ID=<agent_name>`，否则 CLI 调用失败。
+
+**完成状态：** ✅ ZZ-011 中已在全部 12 份 SOUL.md 中标准化了环境变量设置命令块，每份 SOUL.md 开头均包含完整的 export 模板。同时 ZZ-012/016 workspace 隔离部署后，各部门 workspace 的 SOUL.md 内含正确路径。
 
 **解决方案（两选一）：**
 

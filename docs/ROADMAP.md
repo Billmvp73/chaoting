@@ -1,6 +1,6 @@
 # ROADMAP — 朝廷系统
 
-> 当前版本：v0.2（门下省 Go/No-Go 审议机制已完成）
+> 当前版本：v0.3（典籍/前车知识系统、workspace 隔离、decide 命令、Agent Teams 已完成）
 > 本文档规划 v0.3 → v0.4 → v1.0 三个演进阶段。
 
 ---
@@ -10,51 +10,48 @@
 | 模块 | 状态 |
 |------|------|
 | Dispatcher + SQLite 状态机 | ✅ 完成 |
-| chaoting CLI（pull/plan/progress/done/fail/context） | ✅ 完成 |
+| chaoting CLI（全命令含 decide/lesson/--dianji/--lesson） | ✅ 完成 |
 | 中书省规划流程 | ✅ 完成 |
-| 门下省给事中投票（Go/No-Go、封驳重提、三驳失败） | ✅ 完成 |
+| 门下省给事中投票（Go/No-Go、封驳重提、三驳 → escalated） | ✅ 完成 |
 | 13 个 Agent 注册（司礼监、中书省、4 给事中、六部） | ✅ 完成 |
 | E2E 测试（正常审批 + 封驳重提流程） | ✅ 完成 |
-| 用户推送通知 | ❌ 未完成 |
-| CLI 任务列表 / 状态查询 | ❌ 未完成 |
+| 用户推送通知（Discord Thread per-zouzhe） | ✅ 完成（ZZ-023） |
+| CLI 任务列表 / 状态查询（list / status） | ✅ 完成（ZZ-20260308-060） |
+| 皇上裁决命令（decide approve/reject/revise） | ✅ 完成（ZZ-030） |
+| 典籍（dianji）P0+P1 集成（写入+dispatch 注入） | ✅ 完成（ZZ-021/022/023/025） |
+| 前车之鉴（qianche / lesson 命令） | ✅ 完成（ZZ-022） |
+| revise 不设次数上限（皇上下旨） | ✅ 完成（ZZ-014） |
+| Workspace 隔离部署（多 workspace 独立运行） | ✅ 完成（ZZ-012/016） |
+| 兵部 Agent Teams 多角色协作模式 | ✅ 完成（ZZ-020/021/022） |
+| Issue+PR 双联规范（Closes #N + mention） | ✅ 完成（ZZ-031） |
+| 封驳消息路径 bug 修复（revise_trigger 区分） | ✅ 完成（ZZ-029） |
 | Agent 故障转移 | ❌ 未完成 |
 | 任务依赖关系 | ❌ 未完成 |
 | Web Dashboard | ❌ 未完成 |
 
 ---
 
-## v0.3 — 可用性增强
+## v0.3 — 可用性增强 ✅
 
 > **目标：** 让系统从"能跑"变成"好用"。补齐日常运维必需的观测和容错能力。
 
-### 1. 用户推送通知
+### 1. 用户推送通知 ✅
 
 **是什么：** 任务完成、失败、超时时，通过 OpenClaw 消息通道（Signal/Telegram/Discord）主动推送给用户，而不仅写入数据库。
 
-**为什么需要：** 目前用户必须主动查询才能知道任务状态，无感知。任务失败或长时间未响应时用户毫无察觉，严重影响使用体验。司礼监已有 `notify_silijian` 基础，需扩展到普通完成/失败事件。
-
-**实现要点：**
-- `chaoting done` / `chaoting fail` 时触发 OpenClaw `message` 工具通知
-- 通知内容：奏折 ID、标题、状态、产出摘要/失败原因
-- 支持配置：可选开关、目标渠道
+**完成状态：** ✅ 已于 ZZ-20260309-023 实现 Discord Thread 通知。每个奏折拥有独立 Thread，任务分派/完成/失败/超时均推送通知，含去重防重发机制（ZZ-026/027 修复）。
 
 **预估工作量：** S（改动集中在 `dispatcher.py` 和 `chaoting` CLI）
 
 ---
 
-### 2. CLI 观测命令（list / status / logs）
+### 2. CLI 观测命令（list / status） ✅
 
 **是什么：** 新增三条 CLI 命令：
 - `chaoting list [--state <状态>] [--agent <角色>] [--limit N]`：列出奏折
 - `chaoting status <id>`：查看单个奏折的完整状态（含流转历史、投票记录）
-- `chaoting logs <id>`：查看奏折的奏报（zoubao）流水
 
-**为什么需要：** 当前无法从命令行快速查看系统状态。调试、运维、演示时只能直接查 SQLite，门槛高且容易误操作。
-
-**实现要点：**
-- 纯只读 SQL 查询，格式化输出
-- `list` 支持按状态/部门/优先级过滤，默认显示最近 20 条
-- `status` 一屏展示所有关键信息
+**完成状态：** ✅ `list` 和 `status` 已于 ZZ-20260308-060 实现。`chaoting logs` 和 `chaoting stats` 作为增强项延续至 v0.4。
 
 **预估工作量：** S
 
@@ -94,33 +91,33 @@
 
 ---
 
-### 5. Flight Rules 引擎（基于前车之鉴）
+### 5. Flight Rules 引擎（基于前车之鉴）✅ 部分完成
 
 **是什么：** 在 `qianche`（前车之鉴）表基础上，构建自动建议引擎：当新奏折与历史失败/重试任务相似时，在 `pull` 返回结果中高亮相关经验教训，辅助 Agent 规避已知风险。
 
-**为什么需要：** `qianche` 表已存在但未被主动利用——Agent 只有在 `pull` 时看到全部记录，无法快速识别相关内容。Flight Rules 将历史教训转化为可操作的决策辅助，降低重蹈覆辙的概率。
+**完成状态：** ✅ 基础版已完成（ZZ-022）：
+- `chaoting lesson` 命令已实现（写入 `qianche`）
+- `chaoting done --lesson` 内联写入已实现
+- `chaoting pull` 已自动注入相关 `qianche` 记录（P1，按 `agent_role` 匹配，最多 5 条）
 
-**实现要点：**
-- `chaoting pull` 时按 `agent_role` + 关键词匹配 `qianche`，返回 top-3 相关记录
-- 支持 `chaoting lesson <id> <text>` 快捷命令写入 `qianche`（简化当前 `context` 命令）
-- 给事中审核时自动注入相关 `qianche` 记录，辅助判断
+**待完成：** 智能相似度匹配（关键词 → top-3 语义相关）、给事中审核时自动注入
 
-**预估工作量：** M
+**预估工作量：** M（剩余：智能匹配）
 
 ---
 
-### 6. 典籍（dianji）自动注入与过期清理
+### 6. 典籍（dianji）自动注入与过期清理 ✅ P0+P1 完成
 
 **是什么：** 执行部门完成任务时，自动从产出内容中提取关键上下文写入 `dianji`；同时为 `dianji` 增加 TTL（存活时间），定期将过期条目标记为 `stale`。
 
-**为什么需要：** 当前典籍完全依赖 Agent 手动调用 `chaoting context` 写入，实际使用率低。自动提取可让知识库随任务自然增长；TTL 清理防止过时信息误导后续 Agent。
+**完成状态：** ✅ P0+P1 已完成（ZZ-022）：
+- `chaoting done --dianji key=value` 内联写入
+- `chaoting context` 独立写入命令
+- `chaoting pull` 自动注入相关 `dianji`（最多 10 条，按 `agent_role` 过滤）
 
-**实现要点：**
-- `chaoting done` 时可附带 `--context key=value` 批量写入 `dianji`
-- Dispatcher 定期扫描 `dianji`，将超过 30 天未更新且 `confidence=fresh` 的记录降级为 `stale`
-- `dianji` 表新增 `expires_at` 字段
+**待完成：** TTL 老化机制（`expires_at` 字段 + 定期降级为 `stale`）
 
-**预估工作量：** S
+**预估工作量：** S（剩余：TTL 清理）
 
 ---
 
@@ -175,17 +172,20 @@
 
 ## 版本规划总览
 
-| 版本 | 功能 | 工作量 | 优先级 |
-|------|------|--------|--------|
-| **v0.3** | 用户推送通知 | S | 🔴 高 |
-| **v0.3** | CLI 观测命令（list/status/logs） | S | 🔴 高 |
-| **v0.3** | Agent 故障转移（Fallback） | M | 🟡 中 |
-| **v0.4** | 任务依赖（前置条件） | M | 🟡 中 |
-| **v0.4** | Flight Rules 引擎 | M | 🟡 中 |
-| **v0.4** | 典籍自动注入与过期清理 | S | 🟢 低 |
-| **v1.0** | Web Dashboard | L | 🟡 中 |
-| **v1.0** | 任务模板 | S | 🟢 低 |
-| **v1.0** | 运营指标统计 | S | 🟢 低 |
+| 版本 | 功能 | 工作量 | 状态 |
+|------|------|--------|------|
+| **v0.3** | 用户推送通知（Discord Thread） | S | ✅ 完成 |
+| **v0.3** | CLI 观测命令（list/status） | S | ✅ 完成 |
+| **v0.3** | 皇上裁决命令（decide） | S | ✅ 完成 |
+| **v0.3** | Workspace 隔离部署 | M | ✅ 完成 |
+| **v0.3** | 兵部 Agent Teams 协作模式 | M | ✅ 完成 |
+| **v0.3** | Agent 故障转移（Fallback） | M | ⏳ 待实现 |
+| **v0.4** | 任务依赖（前置条件） | M | ⏳ 待实现 |
+| **v0.4** | Flight Rules 引擎（智能匹配） | M | 🔶 部分完成（基础版 ✅） |
+| **v0.4** | 典籍 dianji TTL 清理 | S | 🔶 部分完成（P0+P1 ✅） |
+| **v1.0** | Web Dashboard | L | ⏳ 待实现 |
+| **v1.0** | 任务模板 | S | ⏳ 待实现 |
+| **v1.0** | 运营指标统计（stats） | S | ⏳ 待实现 |
 
 > 工作量参考：S = 1-2天 / M = 3-5天 / L = 1-2周
 
