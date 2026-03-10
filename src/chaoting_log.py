@@ -17,7 +17,15 @@ CHAOTING_DIR = os.environ.get(
     "CHAOTING_DIR",
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 )
-LOGS_DIR = os.path.join(CHAOTING_DIR, "logs")
+
+# ── workspace 隔离支持（ZZ-20260310-016）──
+# 若 CHAOTING_WORKSPACE 已设置，日志写入 {workspace}/.chaoting/logs/
+# 否则沿用原有 {CHAOTING_DIR}/logs/（向后兼容）
+_workspace = os.environ.get("CHAOTING_WORKSPACE", "")
+if _workspace:
+    LOGS_DIR = os.path.join(_workspace, ".chaoting", "logs")
+else:
+    LOGS_DIR = os.path.join(CHAOTING_DIR, "logs")
 
 LOG_SEPARATOR = "━" * 42   # Visual block separator used in log blocks
 

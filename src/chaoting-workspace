@@ -1,0 +1,353 @@
+#!/usr/bin/env python3
+"""chaoting-workspace — Chaoting workspace management tool.
+
+Usage:
+  chaoting-workspace list                     # List all managed workspaces
+  chaoting-workspace install <workspace>      # Install Chaoting into a workspace
+  chaoting-workspace uninstall <workspace>    # Remove service (keeps data)
+  chaoting-workspace status [workspace]       # Show service + DB status
+  chaoting-workspace migrate <old-dir> <new-workspace>  # Migrate legacy install
+
+Environment:
+  CHAOTING_DIR — Path to the Chaoting repo (code source). Default: auto-detect.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+# ── Locate Chaoting repo ──────────────────────────────────────────────────
+SCRIPT_DIR = Path(__file__).resolve().parent
+CHAOTING_DIR = os.environ.get(
+    "CHAOTING_DIR",
+    str(SCRIPT_DIR.parent if (SCRIPT_DIR.parent / "src").is_dir() else SCRIPT_DIR),
+)
+
+REGISTRY_PATH = Path.home() / ".chaoting-workspaces.json"
+
+
+# ── Registry helpers ──────────────────────────────────────────────────────
+
+def _load_registry() -> dict:
+    if REGISTRY_PATH.exists():
+        try:
+            return json.loads(REGISTRY_PATH.read_text())
+        except Exception:
+            return {"workspaces": []}
+    return {"workspaces": []}
+
+
+def _save_registry(reg: dict) -> None:
+    REGISTRY_PATH.write_text(json.dumps(reg, indent=2))
+
+
+def _register(workspace_path: str, service_name: str) -> None:
+    reg = _load_registry()
+    entry = {"path": workspace_path, "service": service_name}
+    existing = [w for w in reg["workspaces"] if w["path"] != workspace_path]
+    reg["workspaces"] = existing + [entry]
+    _save_registry(reg)
+
+
+def _deregister(workspace_path: str) -> None:
+    reg = _load_registry()
+    reg["workspaces"] = [w for w in reg["workspaces"] if w["path"] != workspace_path]
+    _save_registry(reg)
+
+
+# ── Workspace name derivation ─────────────────────────────────────────────
+
+def _workspace_name(workspace_path: str) -> str:
+    """Derive a systemd-safe name from workspace path."""
+    return Path(workspace_path).name.lower().replace(" ", "-").replace("_", "-")
+
+
+def _service_name(workspace_path: str) -> str:
+    return f"chaoting-dispatcher-{_workspace_name(workspace_path)}"
+
+
+def _data_dir(workspace_path: str) -> Path:
+    return Path(workspace_path) / ".chaoting"
+
+
+# ── systemctl helpers ─────────────────────────────────────────────────────
+
+def _systemctl(*args) -> tuple[int, str]:
+    r = subprocess.run(
+        ["systemctl", "--user", *args],
+        capture_output=True, text=True
+    )
+    return r.returncode, r.stdout + r.stderr
+
+
+def _service_active(service: str) -> bool:
+    rc, _ = _systemctl("is-active", service)
+    return rc == 0
+
+
+def _service_enabled(service: str) -> bool:
+    rc, _ = _systemctl("is-enabled", service)
+    return rc == 0
+
+
+# ── Commands ──────────────────────────────────────────────────────────────
+
+def cmd_list(_args):
+    reg = _load_registry()
+    workspaces = reg.get("workspaces", [])
+    if not workspaces:
+        print("No managed workspaces. Use: chaoting-workspace install <path>")
+        return
+
+    print(f"{'WORKSPACE':<40}  {'SERVICE':<45}  {'STATUS':<8}  {'DB'}")
+    print("-" * 120)
+    for w in workspaces:
+        wp = w["path"]
+        svc = w["service"]
+        active = "active" if _service_active(svc) else "inactive"
+        db = _data_dir(wp) / "chaoting.db"
+        db_status = f"✓ {db.stat().st_size // 1024}KB" if db.exists() else "✗ missing"
+        print(f"{wp:<40}  {svc:<45}  {active:<8}  {db_status}")
+
+
+def cmd_install(args):
+    workspace_path = str(Path(args.workspace).resolve())
+    if not Path(workspace_path).is_dir():
+        print(f"Error: workspace directory not found: {workspace_path}", file=sys.stderr)
+        sys.exit(1)
+
+    svc = _service_name(workspace_path)
+    data = _data_dir(workspace_path)
+    db = data / "chaoting.db"
+
+    print(f"Installing Chaoting into workspace: {workspace_path}")
+    print(f"  Service:  {svc}")
+    print(f"  Data dir: {data}")
+
+    # Create .chaoting/ structure
+    (data / "logs").mkdir(parents=True, exist_ok=True)
+    (data / "sentinels").mkdir(parents=True, exist_ok=True)
+
+    # Initialize DB
+    env = os.environ.copy()
+    env["CHAOTING_DIR"] = CHAOTING_DIR
+    env["CHAOTING_WORKSPACE"] = workspace_path
+    r = subprocess.run(
+        [sys.executable, str(Path(CHAOTING_DIR) / "src" / "init_db.py")],
+        env=env
+    )
+    if r.returncode != 0:
+        print("Error: DB initialization failed", file=sys.stderr)
+        sys.exit(1)
+    print(f"  DB initialized: {db}")
+
+    # Find OPENCLAW_CLI
+    openclaw_cli = os.environ.get("OPENCLAW_CLI", "")
+    if not openclaw_cli:
+        for candidate in ["themachine", "openclaw"]:
+            r = subprocess.run(["which", candidate], capture_output=True, text=True)
+            if r.returncode == 0:
+                openclaw_cli = r.stdout.strip()
+                break
+    if not openclaw_cli:
+        print("Error: OPENCLAW_CLI not found. Set OPENCLAW_CLI env var.", file=sys.stderr)
+        sys.exit(1)
+
+    openclaw_state_dir = os.environ.get("OPENCLAW_STATE_DIR", str(Path.home() / ".openclaw"))
+    path_prefix = str(Path(openclaw_cli).parent)
+
+    # Generate service file
+    service_content = f"""[Unit]
+Description=Chaoting Dispatcher ({_workspace_name(workspace_path)})
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 {CHAOTING_DIR}/src/dispatcher.py
+Restart=always
+RestartSec=5
+Environment=CHAOTING_DIR={CHAOTING_DIR}
+Environment=CHAOTING_WORKSPACE={workspace_path}
+Environment=OPENCLAW_CLI={openclaw_cli}
+Environment=OPENCLAW_STATE_DIR={openclaw_state_dir}
+Environment=PATH={path_prefix}:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+
+[Install]
+WantedBy=default.target
+"""
+
+    service_dir = Path.home() / ".config" / "systemd" / "user"
+    service_dir.mkdir(parents=True, exist_ok=True)
+    service_file = service_dir / f"{svc}.service"
+    service_file.write_text(service_content)
+    print(f"  Service file: {service_file}")
+
+    # Enable and start
+    _systemctl("daemon-reload")
+    _systemctl("enable", svc)
+    _systemctl("restart", svc)
+    rc, out = _systemctl("is-active", svc)
+    if rc == 0:
+        print(f"  ✅ Service {svc} started successfully")
+    else:
+        print(f"  ⚠️  Service may not have started: {out.strip()}")
+
+    # Register
+    _register(workspace_path, svc)
+    print(f"\nDone! Check status: systemctl --user status {svc}")
+
+
+def cmd_uninstall(args):
+    workspace_path = str(Path(args.workspace).resolve())
+    svc = _service_name(workspace_path)
+
+    print(f"Uninstalling service for workspace: {workspace_path}")
+    print(f"  Service: {svc}  (data preserved)")
+
+    _systemctl("disable", "--now", svc)
+    service_file = Path.home() / ".config" / "systemd" / "user" / f"{svc}.service"
+    if service_file.exists():
+        service_file.unlink()
+        print(f"  Removed: {service_file}")
+    _systemctl("daemon-reload")
+    _deregister(workspace_path)
+    print(f"Done. Data preserved at: {_data_dir(workspace_path)}")
+    print(f"To remove data: rm -rf {_data_dir(workspace_path)}")
+
+
+def cmd_status(args):
+    if args.workspace:
+        workspaces = [{"path": str(Path(args.workspace).resolve()),
+                       "service": _service_name(str(Path(args.workspace).resolve()))}]
+    else:
+        reg = _load_registry()
+        workspaces = reg.get("workspaces", [])
+        if not workspaces:
+            print("No managed workspaces.")
+            return
+
+    for w in workspaces:
+        wp = w["path"]
+        svc = w["service"]
+        data = _data_dir(wp)
+        db = data / "chaoting.db"
+
+        print(f"{'=' * 60}")
+        print(f"Workspace: {wp}")
+        print(f"Service:   {svc}")
+
+        active = _service_active(svc)
+        enabled = _service_enabled(svc)
+        print(f"  Active:  {'✅ yes' if active else '❌ no'}")
+        print(f"  Enabled: {'✅ yes' if enabled else '❌ no'}")
+
+        if db.exists():
+            size_kb = db.stat().st_size // 1024
+            import sqlite3
+            try:
+                conn = sqlite3.connect(str(db))
+                total = conn.execute("SELECT COUNT(*) FROM zouzhe").fetchone()[0]
+                active_count = conn.execute(
+                    "SELECT COUNT(*) FROM zouzhe WHERE state NOT IN ('done','failed','timeout')"
+                ).fetchone()[0]
+                conn.close()
+                print(f"  DB:      ✅ {size_kb}KB — {total} zouzhe ({active_count} active)")
+            except Exception as e:
+                print(f"  DB:      ⚠️  {size_kb}KB (error: {e})")
+        else:
+            print(f"  DB:      ✗ not found at {db}")
+
+        logs = data / "logs"
+        if logs.is_dir():
+            log_count = sum(1 for _ in logs.iterdir())
+            print(f"  Logs:    {logs} ({log_count} entries)")
+
+
+def cmd_migrate(args):
+    old_dir = str(Path(args.old_dir).resolve())
+    new_ws = str(Path(args.new_workspace).resolve())
+
+    old_db = Path(old_dir) / "chaoting.db"
+    new_data = _data_dir(new_ws)
+    new_db = new_data / "chaoting.db"
+
+    if not old_db.exists():
+        print(f"Error: no chaoting.db found in {old_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    if not Path(new_ws).is_dir():
+        print(f"Error: new workspace directory not found: {new_ws}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Migrating: {old_db} → {new_db}")
+
+    if new_db.exists() and not args.force:
+        print(f"Error: {new_db} already exists. Use --force to overwrite.", file=sys.stderr)
+        sys.exit(1)
+
+    # Create .chaoting/ structure
+    (new_data / "logs").mkdir(parents=True, exist_ok=True)
+    (new_data / "sentinels").mkdir(parents=True, exist_ok=True)
+
+    import shutil
+    shutil.copy2(str(old_db), str(new_db))
+    print(f"  ✅ DB copied ({new_db.stat().st_size // 1024}KB)")
+
+    # Copy logs if they exist
+    old_logs = Path(old_dir) / "logs"
+    if old_logs.is_dir():
+        new_logs = new_data / "logs"
+        shutil.copytree(str(old_logs), str(new_logs), dirs_exist_ok=True)
+        print(f"  ✅ Logs copied")
+
+    print(f"\nMigration complete. Now run:")
+    print(f"  chaoting-workspace install {new_ws}")
+    print(f"\nOptionally stop the old service:")
+    print(f"  systemctl --user disable --now chaoting-dispatcher")
+
+
+# ── CLI entry point ───────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="chaoting-workspace",
+        description="Chaoting workspace management",
+    )
+    sub = parser.add_subparsers(dest="cmd")
+
+    sub.add_parser("list", help="List all managed workspaces")
+
+    p_install = sub.add_parser("install", help="Install Chaoting into a workspace")
+    p_install.add_argument("workspace", help="Path to workspace directory")
+
+    p_uninstall = sub.add_parser("uninstall", help="Remove service (keeps data)")
+    p_uninstall.add_argument("workspace", help="Path to workspace directory")
+
+    p_status = sub.add_parser("status", help="Show status")
+    p_status.add_argument("workspace", nargs="?", help="Specific workspace (optional)")
+
+    p_migrate = sub.add_parser("migrate", help="Migrate legacy install to workspace")
+    p_migrate.add_argument("old_dir", help="Old Chaoting repo / data directory")
+    p_migrate.add_argument("new_workspace", help="New workspace directory")
+    p_migrate.add_argument("--force", action="store_true", help="Overwrite existing DB")
+
+    args = parser.parse_args()
+    if not args.cmd:
+        parser.print_help()
+        sys.exit(1)
+
+    dispatch = {
+        "list": cmd_list,
+        "install": cmd_install,
+        "uninstall": cmd_uninstall,
+        "status": cmd_status,
+        "migrate": cmd_migrate,
+    }
+    dispatch[args.cmd](args)
+
+
+if __name__ == "__main__":
+    main()

@@ -4,10 +4,16 @@ set -euo pipefail
 # install.sh — Install chaoting: dispatcher service + agent workspaces
 #
 # Usage:
-#   ./install.sh                    # interactive install
-#   ./install.sh --dry-run          # preview only, no changes
-#   ./install.sh --auto-config      # non-interactive, auto-merge config
+#   ./install.sh                            # interactive install (legacy mode)
+#   ./install.sh --workspace /path/to/ws    # workspace-isolated install
+#   ./install.sh --dry-run                  # preview only, no changes
+#   ./install.sh --auto-config              # non-interactive, auto-merge config
 #   OPENCLAW_CLI=/path/to/cli ./install.sh
+#
+# Workspace mode (--workspace):
+#   Creates {ws}/.chaoting/ with isolated DB, logs, sentinels, and a
+#   dedicated systemd service named chaoting-dispatcher-{ws-name}.service
+#   Set CHAOTING_WORKSPACE={ws} in agent env to use the isolated data dir.
 #
 # Prerequisites:
 #   - Python 3.8+
@@ -16,10 +22,14 @@ set -euo pipefail
 
 DRY_RUN=0
 AUTO_CONFIG=0
-for arg in "$@"; do
-    case "$arg" in
-        --dry-run)     DRY_RUN=1 ;;
-        --auto-config) AUTO_CONFIG=1 ;;
+WORKSPACE_PATH=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run)     DRY_RUN=1; shift ;;
+        --auto-config) AUTO_CONFIG=1; shift ;;
+        --workspace)   WORKSPACE_PATH="$2"; shift 2 ;;
+        --workspace=*) WORKSPACE_PATH="${1#*=}"; shift ;;
+        *) shift ;;
     esac
 done
 
@@ -27,6 +37,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHAOTING_DIR="${CHAOTING_DIR:-$SCRIPT_DIR}"
 OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
 SOULS_DIR="$CHAOTING_DIR/examples/souls"
+
+# ── Workspace mode setup ──────────────────────────────────────────────────
+if [ -n "$WORKSPACE_PATH" ]; then
+    WORKSPACE_PATH="$(cd "$WORKSPACE_PATH" 2>/dev/null && pwd || echo "$WORKSPACE_PATH")"
+    WORKSPACE_NAME="$(basename "$WORKSPACE_PATH" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+    CHAOTING_DATA_DIR="$WORKSPACE_PATH/.chaoting"
+    SERVICE_NAME="chaoting-dispatcher-${WORKSPACE_NAME}"
+    DB_PATH="$CHAOTING_DATA_DIR/chaoting.db"
+    LOGS_DIR="$CHAOTING_DATA_DIR/logs"
+    SENTINEL_DIR="$CHAOTING_DATA_DIR/sentinels"
+    WORKSPACE_MODE=1
+    echo "🏗️  Workspace mode: $WORKSPACE_PATH"
+    echo "   Data dir:  $CHAOTING_DATA_DIR"
+    echo "   Service:   $SERVICE_NAME"
+else
+    WORKSPACE_NAME=""
+    CHAOTING_DATA_DIR="$CHAOTING_DIR"
+    SERVICE_NAME="chaoting-dispatcher"
+    DB_PATH="$CHAOTING_DIR/chaoting.db"
+    LOGS_DIR="$CHAOTING_DIR/logs"
+    SENTINEL_DIR="$CHAOTING_DIR/sentinels"
+    WORKSPACE_MODE=0
+fi
 
 # --- Agent registry ---
 SUB_AGENTS=(zhongshu jishi_tech jishi_risk jishi_resource jishi_compliance bingbu gongbu hubu libu xingbu libu_hr)
@@ -52,8 +85,14 @@ if [ -z "${OPENCLAW_CLI:-}" ]; then
 fi
 
 # --- Generate service content ---
+# workspace 模式：注入 CHAOTING_WORKSPACE 环境变量，使 dispatcher 使用独立 data dir
+_ENV_WORKSPACE=""
+if [ "$WORKSPACE_MODE" -eq 1 ]; then
+    _ENV_WORKSPACE="Environment=CHAOTING_WORKSPACE=${WORKSPACE_PATH}"
+fi
+
 SERVICE_CONTENT="[Unit]
-Description=Chaoting Dispatcher
+Description=Chaoting Dispatcher${WORKSPACE_NAME:+ ($WORKSPACE_NAME)}
 After=network.target
 
 [Service]
@@ -65,6 +104,7 @@ Environment=OPENCLAW_CLI=${OPENCLAW_CLI}
 Environment=OPENCLAW_STATE_DIR=${OPENCLAW_STATE_DIR}
 Environment=PATH=$(dirname "$OPENCLAW_CLI"):/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
+${_ENV_WORKSPACE}
 
 [Install]
 WantedBy=default.target"
@@ -74,7 +114,11 @@ echo "=== Chaoting Installer ==="
 echo "  CHAOTING_DIR:  $CHAOTING_DIR"
 echo "  OPENCLAW_CLI:  $OPENCLAW_CLI"
 echo "  STATE_DIR:     $OPENCLAW_STATE_DIR"
-echo "  DB_PATH:       $CHAOTING_DIR/chaoting.db"
+echo "  DB_PATH:       $DB_PATH"
+if [ "$WORKSPACE_MODE" -eq 1 ]; then
+    echo "  WORKSPACE:     $WORKSPACE_PATH"
+    echo "  SERVICE:       $SERVICE_NAME"
+fi
 echo ""
 
 # ============================================================
@@ -105,14 +149,21 @@ CHAOTING_DIR="$CHAOTING_DIR" python3 "$CHAOTING_DIR/src/init_db.py"
 # ============================================================
 # Step 2: Install systemd service
 # ============================================================
-echo "[2/4] Installing systemd user service..."
+echo "[2/4] Installing systemd user service ($SERVICE_NAME)..."
 SERVICE_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SERVICE_DIR"
-echo "$SERVICE_CONTENT" > "$SERVICE_DIR/chaoting-dispatcher.service"
+
+# workspace 模式：确保 data dir 存在
+if [ "$WORKSPACE_MODE" -eq 1 ]; then
+    mkdir -p "$CHAOTING_DATA_DIR/logs" "$CHAOTING_DATA_DIR/sentinels"
+    echo "  Created data dir: $CHAOTING_DATA_DIR"
+fi
+
+echo "$SERVICE_CONTENT" > "$SERVICE_DIR/${SERVICE_NAME}.service"
 systemctl --user daemon-reload
-systemctl --user enable chaoting-dispatcher
-systemctl --user restart chaoting-dispatcher
-echo "  Dispatcher service started."
+systemctl --user enable "$SERVICE_NAME"
+systemctl --user restart "$SERVICE_NAME"
+echo "  Dispatcher service started: $SERVICE_NAME"
 
 # ============================================================
 # Step 3: Agent setup
@@ -290,7 +341,11 @@ echo ""
 echo "Done! Next steps:"
 echo "  1. Merge agent config:  cat $FRAGMENT"
 echo "     Add to openclaw.json → agents.list, then restart OpenClaw"
-echo "  2. Check dispatcher:    systemctl --user status chaoting-dispatcher"
+echo "  2. Check dispatcher:    systemctl --user status ${SERVICE_NAME}"
+if [ "$WORKSPACE_MODE" -eq 1 ]; then
+    echo "  3. Workspace data dir:  $CHAOTING_DATA_DIR"
+    echo "     Set CHAOTING_WORKSPACE=$WORKSPACE_PATH in agent env for isolation"
+fi
 echo ""
 echo "To uninstall:"
 echo "  systemctl --user disable --now chaoting-dispatcher"
