@@ -705,6 +705,9 @@ def cmd_revise(args):
             "revise_history = ?",
             "last_revise_reason = ?",
             "total_revise_rounds = ?",
+            # ── V0.4 planning_version 锁定：每次 revise 时 +1 ──
+            # 中书省提交新 plan 时必须携带最新 version，dispatcher 校验匹配才接受
+            "planning_version = planning_version + 1",
             "output = NULL",
             "summary = NULL",
             "error = NULL",
@@ -735,7 +738,7 @@ def cmd_revise(args):
         cursor = db.execute(
             f"UPDATE zouzhe SET {', '.join(set_clauses)} "
             "WHERE id = ? AND state = 'done' "
-            "RETURNING id, exec_revise_count, revise_limit, total_revise_rounds",
+            "RETURNING id, exec_revise_count, revise_limit, total_revise_rounds, planning_version",
             params,
         )
         result = cursor.fetchone()
@@ -787,6 +790,7 @@ def cmd_revise(args):
             "votes_cleared": len(archived_votes),
             "review_required": new_review_required,
             "revise_limit": result["revise_limit"],
+            "planning_version": result["planning_version"],
             "reason": reason,
             "revised_by": caller,
         }
@@ -907,6 +911,9 @@ def cmd_pull(args):
         "total_revise_rounds": (row["total_revise_rounds"] or 0),
         "last_revise_reason": row["last_revise_reason"],
         "suspended_at": row["suspended_at"],
+        # ── V0.4 planning_version（ZZ-20260310-015）──
+        # 中书省必须在 plan JSON 中携带此版本号，cmd_plan 校验匹配才接受
+        "planning_version": (row["planning_version"] or 1),
     }
 
     dianji = [
@@ -957,12 +964,32 @@ def cmd_plan(args):
 
     # Check if review is required
     zouzhe = db.execute(
-        "SELECT id, review_required, discord_thread_id FROM zouzhe WHERE id = ? AND state = 'planning'",
+        "SELECT id, review_required, discord_thread_id, planning_version FROM zouzhe "
+        "WHERE id = ? AND state = 'planning'",
         (zid,),
     ).fetchone()
     if not zouzhe:
         db.close()
         out({"ok": False, "error": "state conflict — zouzhe not in planning state"}, ok=False)
+
+    # ── V0.4 planning_version 锁定校验（ZZ-20260310-015）──
+    # 中书省提交 plan 时应在 plan JSON 中携带 planning_version 字段
+    # 若存在则校验匹配，不匹配说明是过时的旧规划，拒绝接受
+    plan_version_in_plan = plan.get("planning_version")
+    db_version = zouzhe["planning_version"] or 1
+    if plan_version_in_plan is not None and int(plan_version_in_plan) != db_version:
+        db.close()
+        out({
+            "ok": False,
+            "error": (
+                f"planning_version 不匹配：规划版本 {plan_version_in_plan} 已过时，"
+                f"当前 DB 版本为 {db_version}。"
+                f"请先 chaoting pull {zid} 获取最新版本后重新规划。"
+            ),
+            "plan_version_submitted": plan_version_in_plan,
+            "plan_version_required": db_version,
+            "zouzhe_id": zid,
+        }, ok=False)
 
     thread_id = zouzhe["discord_thread_id"]
 
