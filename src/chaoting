@@ -452,33 +452,106 @@ def cmd_status(args):
     })
 
 
+def _detect_duplicate_reason(reason: str, revise_history: list, threshold: float = 0.85) -> dict:
+    """
+    使用 difflib.SequenceMatcher 检测当前返工原因是否与最近一轮高度相似。
+
+    Args:
+        reason: 当前返工原因文本
+        revise_history: 现有 revise_history 数组
+        threshold: 相似度阈值，默认 0.85
+
+    Returns:
+        {"duplicate": bool, "similarity": float, "similar_to_round": int|None}
+    """
+    if not revise_history:
+        return {"duplicate": False, "similarity": 0.0, "similar_to_round": None}
+
+    import difflib
+    # 只检查最近 2 轮，防止与早期原因误判
+    recent = revise_history[-2:] if len(revise_history) >= 2 else revise_history
+    max_sim = 0.0
+    similar_round = None
+
+    for entry in recent:
+        prev_reason = entry.get("reason", "")
+        if not prev_reason:
+            continue
+        sim = difflib.SequenceMatcher(None, reason.strip(), prev_reason.strip()).ratio()
+        if sim > max_sim:
+            max_sim = sim
+            similar_round = entry.get("round")
+
+    return {
+        "duplicate": max_sim >= threshold,
+        "similarity": round(max_sim, 3),
+        "similar_to_round": similar_round,
+    }
+
+
+def _check_revise_timeout(row) -> dict:
+    """
+    检查奏折是否超出防爆轮时间限制。
+
+    Returns:
+        {"expired": bool, "days_elapsed": float, "limit_days": int}
+    """
+    timeout_days = row["revise_timeout_days"] if row["revise_timeout_days"] else 0
+    if timeout_days <= 0:
+        return {"expired": False, "days_elapsed": 0.0, "limit_days": 0}
+
+    created_at = row["created_at"]
+    if not created_at:
+        return {"expired": False, "days_elapsed": 0.0, "limit_days": timeout_days}
+
+    try:
+        from datetime import datetime, timezone
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - created).total_seconds() / 86400.0
+        return {
+            "expired": elapsed >= timeout_days,
+            "days_elapsed": round(elapsed, 2),
+            "limit_days": timeout_days,
+        }
+    except Exception:
+        return {"expired": False, "days_elapsed": 0.0, "limit_days": timeout_days}
+
+
 def cmd_revise(args):
     """Rollback a done zouzhe to revising state for full re-planning and re-review.
 
-    Usage: chaoting revise <zouzhe_id> '<reason>' [--review N]
+    Usage: chaoting revise <zouzhe_id> '<reason>' [--review N] [--limit N] [--timeout-days N]
 
     State transition: done → revising (dispatcher routes revising→planning→zhongshu)
 
-    --review N  Set review_required level for the new round (0-3).
-                Default: 2 (jishi_tech + jishi_risk — 司礼监标准审核级别).
+    --review N        Set review_required level (0-3). Default: 2.
+    --limit N         Set revise_limit. 0=无限制（默认）, N=最多N次.
+    --timeout-days N  Set revise_timeout_days. 0=不限时, N=N天无突破触发suspended.
 
     In one atomic transaction:
-    1. Archive current toupiao votes into revise_history[].votes, then DELETE them
-    2. Archive output/summary into revise_history[]
-    3. Reset revise_count=0, plan=NULL (fresh planning round)
-    4. Set state=revising, increment exec_revise_count, clear output/summary
+    1. Check revise_limit (0=unlimited, skip cap check)
+    2. Archive current toupiao votes into revise_history[].votes, then DELETE them
+    3. Archive output/summary into revise_history[]
+    4. Detect duplicate reason (difflib, threshold=0.85) — warn but do NOT block
+    5. Check revise_timeout — if expired AND timeout_days>0, set suspended instead
+    6. Reset revise_count=0, plan=NULL (fresh planning round)
+    7. Update last_revise_reason, increment total_revise_rounds
 
     Only silijian and zhongshu may initiate (OPENCLAW_AGENT_ID).
-    exec_revise_count capped at 3 (normal/high) or 5 (critical).
+    revise_limit=0 means unlimited (皇上下旨无上限).
     """
     if len(args) < 2:
-        out({"ok": False, "error": "usage: chaoting revise <zouzhe_id> '<reason>' [--review N]"}, ok=False)
+        out({"ok": False, "error": "usage: chaoting revise <zouzhe_id> '<reason>' [--review N] [--limit N] [--timeout-days N]"}, ok=False)
 
     zid = args[0]
     reason = args[1]
 
-    # Parse --review flag (default: 2 — 司礼监标准审核级别: jishi_tech + jishi_risk)
+    # Parse flags
     new_review_required = 2
+    new_revise_limit = None       # None = 不改变
+    new_timeout_days = None       # None = 不改变
     i = 2
     while i < len(args):
         if args[i] == "--review" and i + 1 < len(args):
@@ -488,6 +561,23 @@ def cmd_revise(args):
                     out({"ok": False, "error": "--review must be 0, 1, 2, or 3"}, ok=False)
             except ValueError:
                 out({"ok": False, "error": "--review must be an integer (0-3)"}, ok=False)
+            i += 2
+        elif args[i] == "--limit" and i + 1 < len(args):
+            try:
+                val = args[i + 1]
+                new_revise_limit = 0 if val in ("none", "0", "unlimited") else int(val)
+                if new_revise_limit < 0:
+                    out({"ok": False, "error": "--limit must be >= 0 (0=unlimited)"}, ok=False)
+            except ValueError:
+                out({"ok": False, "error": "--limit must be a non-negative integer or 'none'"}, ok=False)
+            i += 2
+        elif args[i] == "--timeout-days" and i + 1 < len(args):
+            try:
+                new_timeout_days = int(args[i + 1])
+                if new_timeout_days < 0:
+                    out({"ok": False, "error": "--timeout-days must be >= 0 (0=disabled)"}, ok=False)
+            except ValueError:
+                out({"ok": False, "error": "--timeout-days must be a non-negative integer"}, ok=False)
             i += 2
         else:
             i += 1
@@ -510,25 +600,48 @@ def cmd_revise(args):
             db.execute("ROLLBACK")
             db.close()
             out({"ok": False, "error": f"zouzhe {zid} not found"}, ok=False)
+        # sqlite3.Row 不支持 .get()，转为 dict 以便访问 V0.4 新增字段
+        row = dict(row)
 
         if row["state"] != "done":
             db.execute("ROLLBACK")
             db.close()
             out({"ok": False, "error": f"只有 done 状态的奏折可返工，当前状态: '{row['state']}'"}, ok=False)
 
-        # Check revise count cap
-        current_count = row["exec_revise_count"] or 0
-        max_revises = 5 if row["priority"] == "critical" else 3
-        if current_count >= max_revises:
+        # Check suspended state
+        if row.get("suspended_at"):
             db.execute("ROLLBACK")
             db.close()
             out({
                 "ok": False,
-                "error": f"超过最大返工次数（{max_revises}次），请新建奏折",
-                "exec_revise_count": current_count,
+                "error": f"奏折已被暂停（防爆轮机制触发），请先使用 chaoting resume {zid} 解除暂停",
+                "suspended_at": row["suspended_at"],
             }, ok=False)
 
-        # Archive current toupiao votes (all rounds) before deleting
+        # ── V0.4：revise_limit 检查 (0=无限制) ──
+        current_count = row["exec_revise_count"] or 0
+        effective_limit = new_revise_limit if new_revise_limit is not None else (row.get("revise_limit") or 0)
+
+        if effective_limit > 0 and current_count >= effective_limit:
+            db.execute("ROLLBACK")
+            db.close()
+            out({
+                "ok": False,
+                "error": f"已达返工上限（{effective_limit}次），请调整 --limit 或新建奏折",
+                "exec_revise_count": current_count,
+                "revise_limit": effective_limit,
+            }, ok=False)
+
+        # ── 旧版固定上限（向后兼容：仅当 revise_limit=0 且调用时未传 --limit 时保持旧行为）──
+        # 注意：皇上下旨 revise_limit=0（默认）即取消上限，此逻辑已跳过
+        # 此处保留注释说明设计意图，不再执行固定上限检查
+
+        # ── V0.4：防爆轮超时检查 ──
+        effective_timeout = new_timeout_days if new_timeout_days is not None else (row.get("revise_timeout_days") or 0)
+        timeout_info = _check_revise_timeout(dict(row) | {"revise_timeout_days": effective_timeout})
+        will_suspend = timeout_info["expired"]
+
+        # Archive current toupiao votes
         vote_rows = db.execute(
             "SELECT round, jishi_id, agent_id, vote, reason, timestamp "
             "FROM toupiao WHERE zouzhe_id = ? ORDER BY round, id",
@@ -536,17 +649,13 @@ def cmd_revise(args):
         ).fetchall()
         archived_votes = [
             {
-                "round": v["round"],
-                "jishi_id": v["jishi_id"],
-                "agent_id": v["agent_id"],
-                "vote": v["vote"],
-                "reason": v["reason"],
-                "timestamp": v["timestamp"],
+                "round": v["round"], "jishi_id": v["jishi_id"], "agent_id": v["agent_id"],
+                "vote": v["vote"], "reason": v["reason"], "timestamp": v["timestamp"],
             }
             for v in vote_rows
         ]
 
-        # Build revise_history archive entry (includes votes)
+        # Build revise_history archive entry
         existing_history = []
         if row["revise_history"]:
             try:
@@ -554,9 +663,20 @@ def cmd_revise(args):
             except Exception:
                 existing_history = []
 
+        # ── V0.4：重复原因检测 ──
+        dup_check = _detect_duplicate_reason(reason, existing_history)
+        dup_warning = None
+        if dup_check["duplicate"]:
+            dup_warning = (
+                f"⚠️ 当前返工原因与第 {dup_check['similar_to_round']} 轮高度相似"
+                f"（相似度 {dup_check['similarity']:.0%}）。"
+                f"建议：在新一轮规划中提供更具体的改进方向。"
+            )
+
         archive_entry = {
             "round": current_count + 1,
-            "output": row["output"],
+            # output 截断 500 字符防止 JSON 过大
+            "output": (row["output"] or "")[:500] if row["output"] else None,
             "summary": row["summary"],
             "plan": json.loads(row["plan"]) if row["plan"] else None,
             "votes": archived_votes,
@@ -565,33 +685,58 @@ def cmd_revise(args):
             "revised_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
             "prev_review_required": row["review_required"],
             "new_review_required": new_review_required,
+            "dup_similarity": dup_check["similarity"],
         }
         existing_history.append(archive_entry)
         new_history_json = json.dumps(existing_history, ensure_ascii=False)
 
-        # Delete archived votes from toupiao (clean slate for new review round)
         db.execute("DELETE FROM toupiao WHERE zouzhe_id = ?", (zid,))
 
-        # CAS update: only transition from done
-        # Reset revise_count=0 and plan=NULL for fresh planning + review round
-        # Also update review_required to the requested level (default 2)
+        # 计算新 total_revise_rounds
+        new_total_rounds = (row.get("total_revise_rounds") or 0) + 1
+
+        # 构建更新 SQL
+        set_clauses = [
+            "exec_revise_count = exec_revise_count + 1",
+            "revise_count = 0",
+            "plan = NULL",
+            "review_required = ?",
+            "review_agents = NULL",
+            "revise_history = ?",
+            "last_revise_reason = ?",
+            "total_revise_rounds = ?",
+            "output = NULL",
+            "summary = NULL",
+            "error = NULL",
+            "dispatched_at = NULL",
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now')",
+        ]
+        params = [new_review_required, new_history_json, reason[:500], new_total_rounds]
+
+        # 可选：更新 revise_limit / revise_timeout_days
+        if new_revise_limit is not None:
+            set_clauses.append("revise_limit = ?")
+            params.append(new_revise_limit)
+        if new_timeout_days is not None:
+            set_clauses.append("revise_timeout_days = ?")
+            params.append(new_timeout_days)
+
+        if will_suspend:
+            # 防爆轮触发：进入 suspended 而非 revising
+            set_clauses.append("state = 'suspended'")
+            set_clauses.append("suspended_at = strftime('%Y-%m-%dT%H:%M:%S','now')")
+            next_state = "suspended"
+        else:
+            set_clauses.append("state = 'revising'")
+            next_state = "revising"
+
+        params.append(zid)
+
         cursor = db.execute(
-            "UPDATE zouzhe SET "
-            "  state = 'revising', "
-            "  exec_revise_count = exec_revise_count + 1, "
-            "  revise_count = 0, "
-            "  plan = NULL, "
-            "  review_required = ?, "
-            "  review_agents = NULL, "
-            "  revise_history = ?, "
-            "  output = NULL, "
-            "  summary = NULL, "
-            "  error = NULL, "
-            "  dispatched_at = NULL, "
-            "  updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+            f"UPDATE zouzhe SET {', '.join(set_clauses)} "
             "WHERE id = ? AND state = 'done' "
-            "RETURNING id, exec_revise_count",
-            (new_review_required, new_history_json, zid),
+            "RETURNING id, exec_revise_count, revise_limit, total_revise_rounds",
+            params,
         )
         result = cursor.fetchone()
         if not result:
@@ -601,42 +746,131 @@ def cmd_revise(args):
 
         new_count = result["exec_revise_count"]
 
-        # Audit trail in liuzhuan
+        remark_parts = [f"退回修改（第 {new_count} 次）", f"原因: {reason[:100]}"]
+        if will_suspend:
+            remark_parts.append(f"⚠️ 防爆轮：超过 {effective_timeout} 天，进入 suspended 状态")
+        if dup_warning:
+            remark_parts.append(f"⚠️ 重复原因（{dup_check['similarity']:.0%} 相似）")
+
         db.execute(
             "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
             "VALUES (?, ?, 'zhongshu', 'revise', ?)",
-            (zid, caller,
-             f"退回修改（第 {new_count} 次），原因：{reason}；投票已清除，重新进入规划"),
+            (zid, caller, "；".join(remark_parts)),
         )
 
         db.execute("COMMIT")
         db.close()
 
         zouzhe_log(zid, caller, "STATE_TRANSITION",
-                   "done → revising（重新规划+评审）",
+                   f"done → {next_state}（重新规划+评审）",
                    actor=caller,
                    reason=reason,
                    revise_count=new_count,
+                   total_revise_rounds=new_total_rounds,
                    votes_archived=len(archived_votes),
-                   plan_cleared="YES",
-                   review_required=new_review_required)
+                   dup_detected=dup_check["duplicate"],
+                   dup_similarity=dup_check["similarity"],
+                   suspended=will_suspend)
 
-        # Discord notification for revise
         send_discord(
             zid,
-            _fmt_revise_thread(zid, caller, reason, new_count, "revising"),
+            _fmt_revise_thread(zid, caller, reason, new_count, next_state),
             thread_id=row["discord_thread_id"],
         )
-        out({
+
+        response = {
             "ok": True,
             "zouzhe_id": zid,
-            "state": "revising",
+            "state": next_state,
             "exec_revise_count": new_count,
+            "total_revise_rounds": new_total_rounds,
             "votes_cleared": len(archived_votes),
             "review_required": new_review_required,
+            "revise_limit": result["revise_limit"],
             "reason": reason,
             "revised_by": caller,
-        })
+        }
+        if dup_warning:
+            response["warning"] = dup_warning
+            response["dup_similarity"] = dup_check["similarity"]
+        if will_suspend:
+            response["suspended"] = True
+            response["timeout_days"] = effective_timeout
+            response["days_elapsed"] = timeout_info["days_elapsed"]
+
+        out(response)
+
+    except Exception as e:
+        try:
+            db.execute("ROLLBACK")
+        except Exception:
+            pass
+        db.close()
+        out({"ok": False, "error": str(e)}, ok=False)
+
+
+def cmd_resume(args):
+    """解除奏折的暂停状态（防爆轮触发后使用）。
+
+    Usage: chaoting resume <zouzhe_id> ['<reason>']
+
+    State transition: suspended → done (重新允许 revise)
+    Only silijian may resume (OPENCLAW_AGENT_ID).
+    """
+    if len(args) < 1:
+        out({"ok": False, "error": "usage: chaoting resume <zouzhe_id> ['<reason>']"}, ok=False)
+
+    zid = args[0]
+    reason = args[1] if len(args) > 1 else "人工解除暂停"
+
+    caller = os.environ.get("OPENCLAW_AGENT_ID", "")
+    if caller != "silijian":
+        out({
+            "ok": False,
+            "error": f"权限不足：只有 silijian 可解除暂停（当前身份: '{caller}'）",
+        }, ok=False)
+
+    db = get_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM zouzhe WHERE id = ?", (zid,)).fetchone()
+        if not row:
+            db.execute("ROLLBACK")
+            db.close()
+            out({"ok": False, "error": f"zouzhe {zid} not found"}, ok=False)
+        row = dict(row)
+
+        if row["state"] != "suspended":
+            db.execute("ROLLBACK")
+            db.close()
+            out({"ok": False, "error": f"奏折不在 suspended 状态，当前: '{row['state']}'"}, ok=False)
+
+        cursor = db.execute(
+            "UPDATE zouzhe SET state = 'done', suspended_at = NULL, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+            "WHERE id = ? AND state = 'suspended' RETURNING id",
+            (zid,),
+        )
+        if not cursor.fetchone():
+            db.execute("ROLLBACK")
+            db.close()
+            out({"ok": False, "error": "CAS 失败，请重试"}, ok=False)
+
+        db.execute(
+            "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+            "VALUES (?, ?, 'dispatcher', 'resume', ?)",
+            (zid, caller, f"解除暂停：{reason}"),
+        )
+
+        db.execute("COMMIT")
+        db.close()
+
+        zouzhe_log(zid, caller, "STATE_TRANSITION",
+                   "suspended → done（暂停解除）",
+                   actor=caller, reason=reason)
+
+        out({"ok": True, "zouzhe_id": zid, "state": "done",
+             "resumed_by": caller, "reason": reason})
 
     except Exception as e:
         try:
@@ -666,6 +900,13 @@ def cmd_pull(args):
         "state": row["state"],
         "priority": row["priority"],
         "plan": json.loads(row["plan"]) if row["plan"] else None,
+        # ── V0.4：返工上下文（修复 ZZ-20260310-013 RC-2：中书省无法获取返工原因）──
+        "exec_revise_count": row["exec_revise_count"] or 0,
+        "revise_history": json.loads(row["revise_history"]) if row["revise_history"] else [],
+        "revise_limit": (row["revise_limit"] or 0),
+        "total_revise_rounds": (row["total_revise_rounds"] or 0),
+        "last_revise_reason": row["last_revise_reason"],
+        "suspended_at": row["suspended_at"],
     }
 
     dianji = [
@@ -1235,6 +1476,7 @@ COMMANDS = {
     "list": cmd_list,
     "status": cmd_status,
     "revise": cmd_revise,
+    "resume": cmd_resume,
     "pull": cmd_pull,
     "plan": cmd_plan,
     "progress": cmd_progress,
