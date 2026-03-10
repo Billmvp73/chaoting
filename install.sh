@@ -36,13 +36,19 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHAOTING_DIR="${CHAOTING_DIR:-$SCRIPT_DIR}"
 OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
-SOULS_DIR="$CHAOTING_DIR/examples/souls"
 
 # ── Workspace mode setup ──────────────────────────────────────────────────
+# CHAOTING_SRC_DIR always points to the original repo (source of truth for files).
+# In workspace mode CHAOTING_DIR is redirected to {ws}/.chaoting so the deploy
+# is self-contained; in legacy mode they are the same.
+CHAOTING_SRC_DIR="$CHAOTING_DIR"
+SOULS_DIR="$CHAOTING_SRC_DIR/examples/souls"
+
 if [ -n "$WORKSPACE_PATH" ]; then
     WORKSPACE_PATH="$(cd "$WORKSPACE_PATH" 2>/dev/null && pwd || echo "$WORKSPACE_PATH")"
     WORKSPACE_NAME="$(basename "$WORKSPACE_PATH" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
     CHAOTING_DATA_DIR="$WORKSPACE_PATH/.chaoting"
+    CHAOTING_DIR="$CHAOTING_DATA_DIR"  # self-contained: code lives in workspace
     SERVICE_NAME="chaoting-dispatcher-${WORKSPACE_NAME}"
     DB_PATH="$CHAOTING_DATA_DIR/chaoting.db"
     LOGS_DIR="$CHAOTING_DATA_DIR/logs"
@@ -111,14 +117,17 @@ WantedBy=default.target"
 
 # --- Banner ---
 echo "=== Chaoting Installer ==="
-echo "  CHAOTING_DIR:  $CHAOTING_DIR"
+if [ "$WORKSPACE_MODE" -eq 1 ]; then
+    echo "  SOURCE_DIR:    $CHAOTING_SRC_DIR"
+    echo "  DEPLOY_DIR:    $CHAOTING_DIR"
+    echo "  WORKSPACE:     $WORKSPACE_PATH"
+    echo "  SERVICE:       $SERVICE_NAME"
+else
+    echo "  CHAOTING_DIR:  $CHAOTING_DIR"
+fi
 echo "  OPENCLAW_CLI:  $OPENCLAW_CLI"
 echo "  STATE_DIR:     $OPENCLAW_STATE_DIR"
 echo "  DB_PATH:       $DB_PATH"
-if [ "$WORKSPACE_MODE" -eq 1 ]; then
-    echo "  WORKSPACE:     $WORKSPACE_PATH"
-    echo "  SERVICE:       $SERVICE_NAME"
-fi
 echo ""
 
 # ============================================================
@@ -138,6 +147,29 @@ if [ "$DRY_RUN" = "1" ]; then
     echo "[dry-run] Would generate openclaw-agents-fragment.json"
     echo "[dry-run] No changes made."
     exit 0
+fi
+
+# ============================================================
+# Step 0 (workspace only): Copy source, docs, souls into workspace
+# ============================================================
+if [ "$WORKSPACE_MODE" -eq 1 ]; then
+    echo "[0/4] Deploying code to workspace ($CHAOTING_DATA_DIR)..."
+    mkdir -p "$CHAOTING_DATA_DIR/src" "$CHAOTING_DATA_DIR/docs" "$CHAOTING_DATA_DIR/examples/souls"
+
+    # src/ — executable scripts + modules
+    for f in chaoting chaoting_log.py config.py dispatcher.py init_db.py sentinel.py; do
+        cp "$CHAOTING_SRC_DIR/src/$f" "$CHAOTING_DATA_DIR/src/$f"
+    done
+    chmod +x "$CHAOTING_DATA_DIR/src/chaoting"
+    echo "  Copied src/ ($(ls "$CHAOTING_DATA_DIR/src/" | wc -l) files)"
+
+    # docs/
+    cp -r "$CHAOTING_SRC_DIR/docs/"* "$CHAOTING_DATA_DIR/docs/" 2>/dev/null || true
+    echo "  Copied docs/"
+
+    # examples/souls/ (templates for reference)
+    cp "$CHAOTING_SRC_DIR/examples/souls/"*.md "$CHAOTING_DATA_DIR/examples/souls/" 2>/dev/null || true
+    echo "  Copied examples/souls/"
 fi
 
 # ============================================================
@@ -195,18 +227,19 @@ fi
 
 # Helper: inject/update CHAOTING_WORKSPACE env block in a SOUL.md
 _inject_workspace_env() {
-    local soul_file="$1" ws_path="$2" chaoting_dir="$3"
+    local soul_file="$1" ws_path="$2" chaoting_dir="$3" agent_id="$4"
     local marker="## Chaoting 环境变量"
     local block
+    local cli_path="${chaoting_dir}/src/chaoting"
     block=$(cat <<ENVBLOCK
 
 ${marker}
 
-在执行任何 chaoting 命令前，先设置环境变量：
+**每次执行 chaoting 命令前，必须先 export 以下变量，否则命令会失败：**
 
 \`\`\`bash
-export CHAOTING_WORKSPACE=${ws_path}
-export CHAOTING_DIR=${chaoting_dir}
+export CHAOTING_WORKSPACE=${ws_path} CHAOTING_DIR=${chaoting_dir} OPENCLAW_AGENT_ID=${agent_id}
+${cli_path} <command>
 \`\`\`
 ENVBLOCK
 )
@@ -255,7 +288,7 @@ for i in "${!SUB_AGENTS[@]}"; do
     fi
     # Inject/update CHAOTING_WORKSPACE env block in SOUL.md
     if [ "$WORKSPACE_MODE" -eq 1 ] && [ -f "$soul_dst" ]; then
-        _inject_workspace_env "$soul_dst" "$WORKSPACE_PATH" "$CHAOTING_DIR"
+        _inject_workspace_env "$soul_dst" "$WORKSPACE_PATH" "$CHAOTING_DIR" "$agent_id"
     fi
 done
 echo "  Created $CREATED, skipped $SKIPPED."
@@ -286,7 +319,7 @@ case "$CAPCOM_CHOICE" in
             echo "  [create] silijian → $silijian_dst"
         fi
         if [ "$WORKSPACE_MODE" -eq 1 ]; then
-            _inject_workspace_env "$silijian_dst" "$WORKSPACE_PATH" "$CHAOTING_DIR"
+            _inject_workspace_env "$silijian_dst" "$WORKSPACE_PATH" "$CHAOTING_DIR" "silijian"
         fi
         # Add silijian to agent list for config fragment
         SUB_AGENTS+=(silijian)
