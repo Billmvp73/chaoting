@@ -101,60 +101,43 @@ def get_review_agents(zouzhe):
 OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "themachine")
 
 # ── 每奏折独立 session（ZZ-20260311-003）──
-# CHAOTING_ISOLATED_SESSIONS=1 时，每次 dispatch 前 reset agent 主 session，
-# 确保每个奏折在全新 context 中执行（无跨任务 context 污染）
+# CHAOTING_ISOLATED_SESSIONS=1 时，每次 dispatch 前向 agent 发送 /reset 命令，
+# 清空会话历史，确保每个奏折在全新 context 中执行（无跨任务 context 污染）。
+# 文件级持久化（SOUL.md/MEMORY.md/workspace）不受影响。
 CHAOTING_ISOLATED_SESSIONS = os.environ.get("CHAOTING_ISOLATED_SESSIONS", "1") == "1"
-# Gateway password 用于调用 sessions.reset API
-# 优先读取 CHAOTING_GATEWAY_PASSWORD，否则从 themachine.json 中读取
-GATEWAY_PASSWORD: str = os.environ.get("CHAOTING_GATEWAY_PASSWORD", "")
-if not GATEWAY_PASSWORD:
-    try:
-        _tm_config_path = os.path.expanduser("~/.themachine/themachine.json")
-        if os.path.isfile(_tm_config_path):
-            with open(_tm_config_path) as _f:
-                _tm = json.load(_f)
-            GATEWAY_PASSWORD = _tm.get("gateway", {}).get("auth", {}).get("password", "")
-    except Exception:
-        pass
+# /reset 超时（秒），默认 30s
+CHAOTING_RESET_TIMEOUT = int(os.environ.get("CHAOTING_RESET_TIMEOUT", "30"))
 
 
-def _reset_agent_session(agent_id: str) -> str | None:
-    """Reset agent's main session for per-task isolation.
+def _reset_agent_session(agent_id: str) -> bool:
+    """Reset agent's session context before dispatching a new task.
 
-    Calls 'gateway call sessions.reset' to create a fresh context for agent_id.
-    This ensures each dispatched zouzhe runs in a clean session without
-    cross-task context contamination.
+    Sends '/reset' command to the agent, which clears conversation history
+    and creates a fresh session UUID. File-based memory (SOUL.md, MEMORY.md,
+    workspace files) is preserved — only in-session message history is cleared.
 
-    Returns the new sessionId (UUID) on success, or None on failure.
+    Returns True on success, False on failure.
     Never raises — failure is logged as WARNING and dispatch proceeds normally.
 
-    ZZ-20260311-003：每奏折独立 session 机制
+    ZZ-20260311-003：每奏折独立 session 机制（/reset 命令方案）
     """
-    if not GATEWAY_PASSWORD:
-        log.warning("GATEWAY_PASSWORD not configured — skipping session reset for %s", agent_id)
-        return None
     try:
-        key = f"agent:{agent_id}:main"
         result = subprocess.run(
-            [OPENCLAW_CLI, "gateway", "call", "sessions.reset",
-             "--password", GATEWAY_PASSWORD,
-             "--params", json.dumps({"key": key}),
-             "--json"],
-            capture_output=True, text=True, timeout=15,
+            [OPENCLAW_CLI, "agent", "--agent", agent_id,
+             "-m", "/reset", "--timeout", str(CHAOTING_RESET_TIMEOUT)],
+            capture_output=True, text=True, timeout=CHAOTING_RESET_TIMEOUT + 5,
         )
         if result.returncode == 0:
-            data = json.loads(result.stdout.strip())
-            new_uuid = data.get("entry", {}).get("sessionId", "")
-            log.info("Session reset for %s: new UUID=%s", agent_id, new_uuid[:8] if new_uuid else "?")
-            return new_uuid or None
+            log.info("Session /reset OK for %s", agent_id)
+            return True
         else:
-            log.warning("sessions.reset failed for %s (rc=%d): %s",
+            log.warning("/reset failed for %s (rc=%d): %s",
                         agent_id, result.returncode, result.stderr[:200])
     except subprocess.TimeoutExpired:
-        log.warning("sessions.reset timed out for %s", agent_id)
+        log.warning("/reset timed out for %s", agent_id)
     except Exception as e:
-        log.warning("sessions.reset error for %s: %s", agent_id, e)
-    return None
+        log.warning("/reset error for %s: %s", agent_id, e)
+    return False
 
 
 # ──────────────────────────────────────────────────────
@@ -417,14 +400,14 @@ def dispatch_agent(agent_id: str, zouzhe_id: str, timeout_sec: int, msg: str = N
     def _run():
         try:
             # ── ZZ-20260311-003：每奏折独立 session ──
-            # 在 dispatch 前 reset agent 的 main session，确保每个奏折在全新 context 中执行
+            # 发送任务前先发 /reset，清空会话历史，确保每个奏折从干净 context 开始执行
             # 失败时降级为 persistent 模式（不阻塞 dispatch）
             if CHAOTING_ISOLATED_SESSIONS:
-                new_session_id = _reset_agent_session(agent_id)
-                if new_session_id:
-                    log.info("Isolated session ready for %s/%s: %s...", agent_id, zouzhe_id, new_session_id[:8])
+                ok = _reset_agent_session(agent_id)
+                if ok:
+                    log.info("Isolated session ready for %s/%s", agent_id, zouzhe_id)
                 else:
-                    log.warning("Session reset failed for %s/%s — falling back to persistent session", agent_id, zouzhe_id)
+                    log.warning("Session /reset failed for %s/%s — falling back to persistent", agent_id, zouzhe_id)
 
             logfile = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"dispatch-{agent_id}-{zouzhe_id}.log")
             with open(logfile, 'w') as f:
