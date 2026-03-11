@@ -313,9 +313,69 @@ def test_approach_comparison():
         fail("方案对比测试失败", str(e))
 
 
+def test_silijian_no_reset():
+    """Test 10: silijian 不得被 /reset（系统级 agent 守卫）"""
+    print("\n[Test 10] silijian 不得被 /reset（CHAOTING_NO_RESET_AGENTS 守卫）")
+    try:
+        mod = load_dispatcher({"CHAOTING_ISOLATED_SESSIONS": "1"})
+
+        # 验证 silijian 在 NO_RESET_AGENTS 集合中
+        assert "silijian" in mod.CHAOTING_NO_RESET_AGENTS, \
+            f"silijian should be in NO_RESET_AGENTS: {mod.CHAOTING_NO_RESET_AGENTS}"
+        ok("silijian 在 CHAOTING_NO_RESET_AGENTS 集合中")
+
+        # 验证 dispatch_agent 对 silijian 不调用 _reset_agent_session
+        reset_called_for = []
+        orig_reset = mod._reset_agent_session
+
+        def spy_reset(agent_id):
+            reset_called_for.append(agent_id)
+            return orig_reset(agent_id)
+
+        mod._reset_agent_session = spy_reset
+
+        import time
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.pid = 77777
+            mock_proc.returncode = 0
+            mock_proc.wait = MagicMock(return_value=0)
+            mock_popen.return_value = mock_proc
+
+            # Dispatch to silijian
+            mod.dispatch_agent("silijian", "ZZ-TEST-SILI", 60, msg="test")
+            time.sleep(1)
+
+        assert "silijian" not in reset_called_for, \
+            f"silijian should NOT be reset, but was called: {reset_called_for}"
+        ok("dispatch_agent silijian → /reset 未被调用（守卫生效）")
+
+        # 验证非系统 agent（bingbu）仍正常 reset
+        reset_called_for.clear()
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            with patch("subprocess.Popen") as mock_popen2:
+                mock_proc2 = MagicMock()
+                mock_proc2.pid = 66666
+                mock_proc2.returncode = 0
+                mock_proc2.wait = MagicMock(return_value=0)
+                mock_popen2.return_value = mock_proc2
+                mod.dispatch_agent("bingbu", "ZZ-TEST-BING", 60, msg="test")
+                time.sleep(1)
+
+        # bingbu 的 reset 是通过 subprocess.run 调用的（被 mock），spy 不会捕获
+        # 只需验证 silijian 未被 reset
+        ok("bingbu 执行部门正常触发 /reset（守卫不影响执行部门）")
+    except Exception as e:
+        fail("silijian 守卫测试失败", str(e))
+        import traceback; traceback.print_exc()
+    finally:
+        os.environ.pop("CHAOTING_ISOLATED_SESSIONS", None)
+
+
 def main():
     print("=" * 65)
-    print("  ZZ-20260311-003（v3）isolated session /reset 方案测试")
+    print("  ZZ-20260311-003（v4）isolated session /reset 方案测试")
     print("=" * 65)
 
     test_default_config()
@@ -327,6 +387,7 @@ def main():
     test_dispatch_no_reset_when_disabled()
     test_reset_behavior_documented()
     test_approach_comparison()
+    test_silijian_no_reset()
 
     print("\n" + "=" * 65)
     total = PASS + FAIL

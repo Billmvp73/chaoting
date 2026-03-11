@@ -107,6 +107,8 @@ OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "themachine")
 CHAOTING_ISOLATED_SESSIONS = os.environ.get("CHAOTING_ISOLATED_SESSIONS", "1") == "1"
 # /reset 超时（秒），默认 30s
 CHAOTING_RESET_TIMEOUT = int(os.environ.get("CHAOTING_RESET_TIMEOUT", "30"))
+# 不得被 /reset 的 agents（司礼监等系统级 agent 需保持持久 session）
+CHAOTING_NO_RESET_AGENTS: set = {"silijian"}
 
 
 def _reset_agent_session(agent_id: str) -> bool:
@@ -401,13 +403,16 @@ def dispatch_agent(agent_id: str, zouzhe_id: str, timeout_sec: int, msg: str = N
         try:
             # ── ZZ-20260311-003：每奏折独立 session ──
             # 发送任务前先发 /reset，清空会话历史，确保每个奏折从干净 context 开始执行
+            # 司礼监（silijian）及系统级 agent 不得被 reset（保持 persistent session）
             # 失败时降级为 persistent 模式（不阻塞 dispatch）
-            if CHAOTING_ISOLATED_SESSIONS:
+            if CHAOTING_ISOLATED_SESSIONS and agent_id not in CHAOTING_NO_RESET_AGENTS:
                 ok = _reset_agent_session(agent_id)
                 if ok:
                     log.info("Isolated session ready for %s/%s", agent_id, zouzhe_id)
                 else:
                     log.warning("Session /reset failed for %s/%s — falling back to persistent", agent_id, zouzhe_id)
+            elif agent_id in CHAOTING_NO_RESET_AGENTS:
+                log.info("Skipping /reset for %s (no-reset agent) — persistent session kept", agent_id)
 
             logfile = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"dispatch-{agent_id}-{zouzhe_id}.log")
             with open(logfile, 'w') as f:
