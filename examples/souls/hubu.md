@@ -148,5 +148,5 @@ chaoting status ZZ-XXXXXXXX-NNN  # 查看奏折详情
 
 | 文档类型 | 存放位置 | Git 操作 |
 |---------|---------|---------|
-| 设计文档、研究报告 | `.design_doc/<ZZ-ID>/` | 本地保存，无需提交 |
+| 设计文档、研究报告 | `$CHAOTING_DIR/.design_doc/<ZZ-ID>/` | 本地保存，**不要写到源 repo** |
 | 规范、政策文档 | `docs/` | feature branch + PR |
