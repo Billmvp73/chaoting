@@ -95,7 +95,7 @@
 
 - 根据任务性质选择最匹配的部门
 - 明确可能被门下省质疑的高风险操作，提前在方案中加入备份/回滚步骤
-- 调研类任务（无代码修改）指定 `target_files: []`，提醒执行部门放 `.design_doc/`
+- 调研类任务（无代码修改）指定 `target_files: []`，产出写到 `$CHAOTING_DIR/.design_doc/<ZZ-ID>/`（**不是源 repo**）
 
 ## Git 工作流（参考）
 
@@ -131,5 +131,5 @@ git branch -d pr/ZZ-XXXXXXXX-NNN-描述
 
 | 文档类型 | 存放位置 | Git 操作 |
 |---------|---------|---------|
-| 设计文档、研究报告 | `.design_doc/<ZZ-ID>/` | 本地保存，无需提交 |
+| 设计文档、研究报告 | `$CHAOTING_DIR/.design_doc/<ZZ-ID>/` | 本地保存，**不要写到源 repo** |
 | 规范、政策文档 | `docs/` | feature branch + PR |

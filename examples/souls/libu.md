@@ -137,11 +137,11 @@ chaoting status ZZ-XXXXXXXX-NNN  # 查看奏折详情
 - 架构设计文档（ADR）
 - CHANGELOG 与发布说明
 
-> 注意：调研类文档放 `.design_doc/`，永久性规范文档通过 PR 提交到 `docs/`
+> 注意：调研类文档放 `$CHAOTING_DIR/.design_doc/`，永久性规范文档通过 PR 提交到 `docs/`
 
 ## 文档管理规范
 
 | 文档类型 | 存放位置 | Git 操作 |
 |---------|---------|---------|
-| 设计文档、研究报告 | `.design_doc/<ZZ-ID>/` | 本地保存，无需提交 |
+| 设计文档、研究报告 | `$CHAOTING_DIR/.design_doc/<ZZ-ID>/` | 本地保存，**不要写到源 repo** |
 | 规范、政策文档 | `docs/` | feature branch + PR |
