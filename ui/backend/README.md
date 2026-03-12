@@ -13,8 +13,11 @@ pip install -r requirements.txt
 
 ## Run
 
+> ⚠️ Must be run from the `ui/` directory (not `ui/backend/`) due to Python relative imports.
+
 ```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+cd ui/
+python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ## Environment Variables
