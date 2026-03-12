@@ -245,6 +245,15 @@ def cmd_new(args):
 
     title = args[0]
 
+    # Validate title
+    stripped_title = title.strip()
+    if not stripped_title:
+        out({"ok": False, "error": "Invalid title: title cannot be empty"}, ok=False)
+    if stripped_title.startswith("--"):
+        out({"ok": False, "error": 'Invalid title: title cannot start with "--" (possible misuse as a flag)'}, ok=False)
+    if len(stripped_title) < 2:
+        out({"ok": False, "error": "Invalid title: title must be at least 2 characters"}, ok=False)
+
     # description is optional positional arg (before any -- flags)
     description = ""
     idx_start = 1
