@@ -12,55 +12,59 @@
 
 @layer base {
   :root {
-    /* Imperial Court Digital — dark gold theme */
-    --background: #0a0c0f;
-    --surface: #111418;
-    --surface-2: #1a1f26;
-    --border: #2a3040;
-    --primary: #f0b429;
-    --primary-dim: #7d5a1a;
+    /* Imperial Court Digital — 墨底帝王金 theme */
+    --background: #06080b;
+    --surface: #0f1217;
+    --surface-2: #161c24;
+    --border: #252e3d;
+    --primary: #d4a017;
+    --primary-dim: #6b4f0a;
+    --secondary: #c0392b;
+    --secondary-dim: #5a1a12;
+    --imperial-gold: #d4a017;
+    --cinnabar-red: #c0392b;
+    --ink-black: #06080b;
 
-    /* State colors */
+    /* State colors - warm imperial palette */
     --state-created: #64748b;
-    --state-planning: #6366f1;
-    --state-reviewing: #8b5cf6;
-    --state-executing: #06b6d4;
-    --state-done: #22c55e;
-    --state-failed: #ef4444;
-    --state-escalated: #f97316;
-    --state-timeout: #eab308;
+    --state-planning: #7c6fcd;
+    --state-reviewing: #c0392b;
+    --state-executing: #d4a017;
+    --state-done: #27ae60;
+    --state-failed: #e74c3c;
+    --state-escalated: #e67e22;
+    --state-timeout: #f39c12;
 
     /* Text */
     --text-primary: #e8dcc8;
-    --text-secondary: #9aa0ab;
-    --text-accent: #f0b429;
+    --text-secondary: #8a939e;
+    --text-accent: #d4a017;
 
     /* shadcn/ui variable overrides */
     --foreground: #e8dcc8;
-    --card: #111418;
+    --card: #0f1217;
     --card-foreground: #e8dcc8;
-    --popover: #111418;
+    --popover: #0f1217;
     --popover-foreground: #e8dcc8;
-    --primary-foreground: #0a0c0f;
-    --secondary: #1a1f26;
+    --primary-foreground: #06080b;
     --secondary-foreground: #e8dcc8;
-    --muted: #1a1f26;
-    --muted-foreground: #9aa0ab;
-    --accent: #1a1f26;
+    --muted: #161c24;
+    --muted-foreground: #8a939e;
+    --accent: #161c24;
     --accent-foreground: #e8dcc8;
-    --destructive: #ef4444;
-    --input: #2a3040;
-    --ring: #f0b429;
+    --destructive: #e74c3c;
+    --input: #252e3d;
+    --ring: #d4a017;
     --radius: 0.5rem;
 
-    --sidebar: #111418;
+    --sidebar: #0f1217;
     --sidebar-foreground: #e8dcc8;
-    --sidebar-primary: #f0b429;
-    --sidebar-primary-foreground: #0a0c0f;
-    --sidebar-accent: #1a1f26;
+    --sidebar-primary: #d4a017;
+    --sidebar-primary-foreground: #06080b;
+    --sidebar-accent: #161c24;
     --sidebar-accent-foreground: #e8dcc8;
-    --sidebar-border: #2a3040;
-    --sidebar-ring: #f0b429;
+    --sidebar-border: #252e3d;
+    --sidebar-ring: #d4a017;
   }
 
   .theme {
@@ -76,5 +80,26 @@
   }
   html {
     @apply font-sans;
+  }
+}
+
+@layer utilities {
+  @keyframes goldShimmer {
+    0% { background-position: -200% center; }
+    100% { background-position: 200% center; }
+  }
+  .shimmer-gold {
+    background: linear-gradient(90deg, transparent 0%, rgba(212, 160, 23, 0.2) 50%, transparent 100%);
+    background-size: 200% 100%;
+    animation: goldShimmer 0.8s ease-out forwards;
+  }
+
+  @keyframes executingGlow {
+    0%, 100% { border-left-color: #d4a017; }
+    50% { border-left-color: #c0392b; }
+  }
+
+  .executing-glow-border {
+    animation: executingGlow 2s ease-in-out infinite;
   }
 }
