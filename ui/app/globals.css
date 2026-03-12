@@ -1,0 +1,80 @@
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+@layer base {
+  :root {
+    /* Imperial Court Digital — dark gold theme */
+    --background: #0a0c0f;
+    --surface: #111418;
+    --surface-2: #1a1f26;
+    --border: #2a3040;
+    --primary: #f0b429;
+    --primary-dim: #7d5a1a;
+
+    /* State colors */
+    --state-created: #64748b;
+    --state-planning: #6366f1;
+    --state-reviewing: #8b5cf6;
+    --state-executing: #06b6d4;
+    --state-done: #22c55e;
+    --state-failed: #ef4444;
+    --state-escalated: #f97316;
+    --state-timeout: #eab308;
+
+    /* Text */
+    --text-primary: #e8dcc8;
+    --text-secondary: #9aa0ab;
+    --text-accent: #f0b429;
+
+    /* shadcn/ui variable overrides */
+    --foreground: #e8dcc8;
+    --card: #111418;
+    --card-foreground: #e8dcc8;
+    --popover: #111418;
+    --popover-foreground: #e8dcc8;
+    --primary-foreground: #0a0c0f;
+    --secondary: #1a1f26;
+    --secondary-foreground: #e8dcc8;
+    --muted: #1a1f26;
+    --muted-foreground: #9aa0ab;
+    --accent: #1a1f26;
+    --accent-foreground: #e8dcc8;
+    --destructive: #ef4444;
+    --input: #2a3040;
+    --ring: #f0b429;
+    --radius: 0.5rem;
+
+    --sidebar: #111418;
+    --sidebar-foreground: #e8dcc8;
+    --sidebar-primary: #f0b429;
+    --sidebar-primary-foreground: #0a0c0f;
+    --sidebar-accent: #1a1f26;
+    --sidebar-accent-foreground: #e8dcc8;
+    --sidebar-border: #2a3040;
+    --sidebar-ring: #f0b429;
+  }
+
+  .theme {
+    --font-sans: var(--font-sans);
+  }
+  * {
+    border-color: var(--border);
+    outline-color: var(--ring);
+  }
+  body {
+    background-color: var(--background);
+    color: var(--text-primary);
+  }
+  html {
+    @apply font-sans;
+  }
+}
