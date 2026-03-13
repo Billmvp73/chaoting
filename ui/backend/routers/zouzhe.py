@@ -33,6 +33,7 @@ async def list_zouzhe(
     state: str | None = Query(None),
     agent: str | None = Query(None),
     priority: str | None = Query(None),
+    search: str | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -51,6 +52,10 @@ async def list_zouzhe(
         if priority:
             conditions.append("z.priority = ?")
             params.append(priority)
+        if search:
+            conditions.append("(z.title LIKE ? OR z.id LIKE ?)")
+            params.append(f"%{search}%")
+            params.append(f"%{search}%")
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 

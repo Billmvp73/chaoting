@@ -54,8 +54,26 @@ export interface ZoubaoEntry {
   id: number;
   agent_id: string | null;
   text: string;
+  todos_json?: Array<{ done: boolean; text: string }> | null;
   tokens_used: number | null;
   timestamp: string;
+}
+
+export interface CreateZouzheRequest {
+  title: string;
+  description: string;
+  priority: string;
+  review_required: number;
+}
+
+export interface ReviseRequest {
+  reason: string;
+  review_required: number;
+}
+
+export interface DecideRequest {
+  verdict: "approve" | "reject" | "revise";
+  reason?: string;
 }
 
 export interface AgentStatus {
