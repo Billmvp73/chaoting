@@ -288,6 +288,7 @@ async def create_zouzhe(
         cmd,
         capture_output=True,
         text=True,
+        shell=False,
         env=_get_cli_env(),
     )
     if result.returncode != 0:
@@ -345,6 +346,7 @@ async def revise_zouzhe(
         cmd,
         capture_output=True,
         text=True,
+        shell=False,
         env=_get_cli_env(),
     )
     if result.returncode != 0:
@@ -394,6 +396,7 @@ async def decide_zouzhe(
         cmd,
         capture_output=True,
         text=True,
+        shell=False,
         env=_get_cli_env(),
     )
     if result.returncode != 0:
