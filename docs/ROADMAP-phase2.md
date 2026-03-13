@@ -135,6 +135,33 @@ chaoting pull ZZ-XXXXXXXX-NNN --agent bingbu
 **负责方：** 工部（测试环境搭建）+ 刑部（安全审计）  
 **工作量：** S（测试，1天）
 
+### P1-4: Yushi Agent — PR Code Review
+
+**Background:** Executors currently submit PRs and call `done` with no automated code quality gate before silijian merges. A dedicated, independent code reviewer would catch bugs, security issues, and standards violations before they enter the main branch.
+
+The naming conflict between the original `jishi_review` proposal and the existing `jishi` plan review role is resolved by adopting `yushi` (御史 — Censorate auditor). See [docs/design/yushi-pr-review-design.md](design/yushi-pr-review-design.md) for the full analysis.
+
+**Phase A — MVP: Bypass Notification (~2 days)**
+
+- Approach: Option C (no state machine changes)
+- Dispatcher sends a parallel notification to yushi after `done` is reached
+- yushi reviews the PR asynchronously and posts APPROVE / NOGO to the task's Discord Thread
+- silijian references the verdict before merging
+- Acceptance criteria: yushi active on PRs; silijian confirms review quality is acceptable
+
+**Phase B — Full Integration: `pr_review` State (~5 days, prerequisite: Phase A validation)**
+
+- Approach: Option B (new state between `executing` and `done`)
+- Executors call `push-for-review` instead of `done`; task enters `pr_review` state
+- yushi must APPROVE for the state to advance to `done`; NOGO returns task to `executor_revise`
+- Fully autonomous NOGO → revision loop (reuses `exec_revise_count` limit, default 3 rounds)
+- New CLI commands: `push-for-review`, `yushi-approve`, `yushi-nogo`
+- Acceptance criteria: end-to-end APPROVE and NOGO flows verified; NOGO loop tested; silijian cannot merge before yushi approves
+
+**Responsible party:** bingbu (dispatcher + CLI), libu (yushi soul file + docs)  
+**Estimated effort:** Phase A: S (~2 days) | Phase B: M (~5 days)  
+**Design document:** [docs/design/yushi-pr-review-design.md](design/yushi-pr-review-design.md)
+
 ---
 
 ## 四、中优待办（P2）— v0.3 里程碑
