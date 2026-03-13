@@ -40,6 +40,7 @@ class ZoubaoEntry(BaseModel):
     id: int
     agent_id: str | None = None
     text: str | None = None
+    todos_json: list | None = None
     tokens_used: int | None = None
     timestamp: str | None = None
 
@@ -63,6 +64,23 @@ class AgentStatus(BaseModel):
     active_zouzhe_id: str | None = None
     active_zouzhe_title: str | None = None
     last_activity: str | None = None
+
+
+class CreateZouzheRequest(BaseModel):
+    title: str
+    description: str
+    priority: str = "normal"
+    review_required: int = 2
+
+
+class ReviseRequest(BaseModel):
+    reason: str
+    review_required: int = 2
+
+
+class DecideRequest(BaseModel):
+    verdict: str  # "approve" | "reject" | "revise"
+    reason: str | None = None
 
 
 class StateStats(BaseModel):

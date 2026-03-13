@@ -17,6 +17,7 @@ export function useSSE() {
 export function SSEProvider({ children }: { children: React.ReactNode }) {
   const setSseConnected = useChaotingStore((s) => s.setSseConnected);
   const applyZouzheUpdate = useChaotingStore((s) => s.applyZouzheUpdate);
+  const appendZoubaoEntry = useChaotingStore((s) => s.appendZoubaoEntry);
   const sseConnected = useChaotingStore((s) => s.sseConnected);
   const retryRef = useRef(0);
   const esRef = useRef<EventSource | null>(null);
@@ -48,6 +49,22 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
         }
       });
 
+      es.addEventListener("zoubao_new", (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          appendZoubaoEntry(data.zouzhe_id, {
+            id: data.id,
+            agent_id: data.agent_id,
+            text: data.text,
+            todos_json: data.todos_json,
+            tokens_used: data.tokens_used,
+            timestamp: data.timestamp,
+          });
+        } catch {
+          /* ignore */
+        }
+      });
+
       es.onerror = () => {
         setSseConnected(false);
         es.close();
@@ -72,7 +89,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
       }
       setSseConnected(false);
     };
-  }, [setSseConnected, applyZouzheUpdate]);
+  }, [setSseConnected, applyZouzheUpdate, appendZoubaoEntry]);
 
   return (
     <SSEContext.Provider value={{ connected: sseConnected }}>
