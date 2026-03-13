@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+aiosqlite
+pydantic
+sse-starlette
+python-dotenv

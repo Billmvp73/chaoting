@@ -31,3 +31,12 @@ config
 
 # sentinels
 sentinels
+
+# chaoting UI
+ui/node_modules/
+ui/.next/
+ui/.env.local
+ui/backend/__pycache__/
+ui/backend/*.pyc
+ui/backend/venv/
+ui/backend/.env
