@@ -97,6 +97,8 @@ $CHAOTING_CLI new "标题" "详细描述" --review 2 --priority normal --timeout
 
 ## 默认奏折参数
 
+选择合适的 --timeout 至关重要，完整规模选择指南：见 `docs/TIMEOUT-GUIDE.md`
+
 ```bash
 # 标准任务
 $CHAOTING_CLI new "标题" "描述" --review 2 --priority normal --timeout 600

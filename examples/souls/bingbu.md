@@ -52,6 +52,7 @@
 
 完整 Git 规范：见 `docs/GIT-WORKFLOW.md`
 Thread 反馈格式：见 `docs/POLICY-thread-feedback.md`
+选择 --timeout 时请参考任务规模，完整指南：见 `docs/TIMEOUT-GUIDE.md`
 
 ## 擅长领域
 

@@ -37,6 +37,7 @@
 | 系统规范 | `docs/SPEC.md` | chaoting 核心 spec |
 | 门下省规范 | `docs/SPEC-menxia.md` | 审核流程详细规范 |
 | Git 工作流 | `docs/GIT-WORKFLOW.md` | 分支、PR、worktree 规范 |
+| Timeout 选择指南 | `docs/TIMEOUT-GUIDE.md` | Task timeout size reference (XS/S/M/L/XL), decision checklist, worktree requirements for L/XL |
 | Thread 格式 | `docs/POLICY-thread-format.md` | Discord 消息格式 |
 | Thread 反馈 | `docs/POLICY-thread-feedback.md` | 完成/失败反馈格式 |
 | Agent Teams | `docs/AGENT-TEAMS-GUIDE.md` | 多 agent 协作指南 |
