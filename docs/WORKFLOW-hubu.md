@@ -1,5 +1,8 @@
 # WORKFLOW-hubu.md — 户部执行工作流详细指南
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: hubu
+
+
 > 版本：v1.0 | 适用角色：hubu (executor — 数据/DB)
 
 ---

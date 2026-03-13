@@ -1,5 +1,8 @@
 # GIT-WORKFLOW.md — 朝廷系统 Git 开发工作流规范
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: gongbu
+
+
 > 版本：v1.0  
 > 制定日期：2026-03-09  
 > 适用范围：所有执行部门（bingbu / gongbu / 及未来加入的部门）  

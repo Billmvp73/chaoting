@@ -1,5 +1,8 @@
 # 朝廷 (chaoting) — Multi-Agent Task Orchestration System
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: libu
+
+
 ## Overview
 
 A task orchestration system for OpenClaw multi-agent workflows. Agents coordinate through a shared SQLite database (stigmergy pattern) — no direct agent-to-agent communication.

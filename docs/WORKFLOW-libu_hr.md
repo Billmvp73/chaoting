@@ -1,5 +1,8 @@
 # WORKFLOW-libu_hr.md — 吏部执行工作流详细指南
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: libu
+
+
 > 版本：v1.0 | 适用角色：libu_hr (executor — 项目管理)
 
 ---

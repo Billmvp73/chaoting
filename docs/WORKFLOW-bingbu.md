@@ -1,5 +1,8 @@
 # WORKFLOW-bingbu.md — 兵部执行工作流详细指南
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: bingbu
+
+
 > 版本：v1.0 | 适用角色：bingbu (executor — 编码开发)
 
 ---

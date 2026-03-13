@@ -1,5 +1,8 @@
 # POLICY-thread-feedback.md — 执行部门 Thread 反馈规范
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: libu
+
+
 > 版本：v1.1  
 > 制定日期：2026-03-09  
 > 制定部门：吏部（libu_hr）  

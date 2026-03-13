@@ -1,5 +1,8 @@
 # ROADMAP-phase2.md — 朝廷系统第二阶段规划
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: libu
+
+
 > 制定日期：2026-03-09 | 最后更新：2026-03-10
 > 制定部门：吏部（libu_hr）| 文档更新：礼部（libu）
 > 依据奏折：ZZ-20260309-028 | 更新依据：ZZ-20260310-032
