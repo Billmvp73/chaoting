@@ -90,15 +90,19 @@ pr/ZZ-20260309-020-cmd-new-notify
 
 ## 三、标准开发流程
 
-### 步骤一：接旨，创建 feature branch
+### 步骤一：接旨，使用 worktree 创建隔离工作空间（必须）
+
+**必须使用 git worktree 隔离工作空间**，防止与其他任务冲突：
 
 ```bash
 # 确保本地 master 与 origin 同步
+cd /home/tetter/self-project/chaoting
 git checkout master
 git pull origin master
 
-# 从最新 master 创建 feature branch
-git checkout -b pr/ZZ-XXXXXXXX-NNN-feature-name
+# 使用 worktree 创建隔离工作空间 + feature branch
+git worktree add ../worktree-ZZ-XXXXXXXX-NNN -b pr/ZZ-XXXXXXXX-NNN-feature-name
+cd ../worktree-ZZ-XXXXXXXX-NNN
 
 # 验证
 git log --oneline -3  # 确认从正确的 commit 开始
@@ -292,9 +296,9 @@ git push origin master  # fast-forward push 成功
 
 ---
 
-## 五、worktree 模式（可选，长周期任务推荐）
+## 五、worktree 模式（必须，所有奏折任务）
 
-对于涉及多文件、多 commit 的长周期任务，推荐使用 `git worktree` 隔离工作空间：
+**所有奏折任务必须使用 `git worktree` 隔离工作空间**，防止与其他任务冲突：
 
 ```bash
 # 在独立目录开发，不影响主 checkout
@@ -303,7 +307,7 @@ cd ../worktree-ZZ-XXXXXXXX-NNN
 
 # 正常开发...
 
-# 完成后清理
+# 完成后清理（Merge 后必须执行）
 cd /home/tetter/self-project/chaoting
 git worktree remove ../worktree-ZZ-XXXXXXXX-NNN
 ```
@@ -314,13 +318,14 @@ git worktree remove ../worktree-ZZ-XXXXXXXX-NNN
 
 ```
 日常流程（三步）：
-  1. git checkout -b pr/ZZ-xxx-描述     # 开分支
-  2. <开发 + commit>
+  1. git worktree add ../worktree-ZZ-xxx -b pr/ZZ-xxx-描述  # worktree + 开分支
+  2. cd ../worktree-ZZ-xxx && <开发 + commit>
   3. git push + gh pr create            # 提 PR
 
-Merge 后（两步，必须做）：
+Merge 后（三步，必须做）：
   1. git checkout master && git pull origin master
   2. git branch -d pr/ZZ-xxx-描述       # 删分支
+  3. git worktree remove ../worktree-ZZ-xxx  # 清理 worktree
 
 发现分歧时：
   git branch backup/fix-$(date +%Y%m%d)

@@ -979,8 +979,53 @@ def cmd_pull(args):
         ).fetchall()
     ]
 
+    # Plan file and worktree path hints
+    plan_file_path = os.path.join(CHAOTING_DATA_DIR, "docs", "plans", f"{zid}.md")
+    plan_file = plan_file_path if os.path.isfile(plan_file_path) else None
+    worktree_path = None
+    if zouzhe["plan"] and isinstance(zouzhe["plan"], dict) and zouzhe["plan"].get("repo_path"):
+        worktree_path = os.path.join(os.path.dirname(zouzhe["plan"]["repo_path"]), f"worktree-{zid}")
+
     db.close()
-    out({"ok": True, "zouzhe": zouzhe, "dianji": dianji, "qianche": qianche, "liuzhuan": liuzhuan})
+    out({"ok": True, "zouzhe": zouzhe, "dianji": dianji, "qianche": qianche, "liuzhuan": liuzhuan,
+         "plan_file": plan_file, "worktree_path": worktree_path})
+
+
+def _write_plan_md(zid, plan, target_agent):
+    """Write plan data to a Markdown file at CHAOTING_DATA_DIR/docs/plans/{zid}.md."""
+    try:
+        plan_dir = os.path.join(CHAOTING_DATA_DIR, "docs", "plans")
+        os.makedirs(plan_dir, exist_ok=True)
+        plan_path = os.path.join(plan_dir, f"{zid}.md")
+        now = datetime.now(timezone.utc).isoformat()
+        title = plan.get("title", plan.get("description", "untitled"))
+        description = plan.get("description", "N/A")
+        steps = plan.get("steps", [])
+        acceptance_criteria = plan.get("acceptance_criteria", "N/A")
+        steps_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(steps)) if steps else "N/A"
+        content = (
+            f"# Plan: {zid} — {title}\n"
+            f"\n"
+            f"**Status**: planning  \n"
+            f"**Target Agent**: {target_agent}  \n"
+            f"**Created**: {now}\n"
+            f"\n"
+            f"## Task Description\n"
+            f"\n"
+            f"{description}\n"
+            f"\n"
+            f"## Steps\n"
+            f"\n"
+            f"{steps_text}\n"
+            f"\n"
+            f"## Acceptance Criteria\n"
+            f"\n"
+            f"{acceptance_criteria}\n"
+        )
+        with open(plan_path, "w") as f:
+            f.write(content)
+    except Exception as e:
+        print(f"[WARN] failed to write plan file for {zid}: {e}", file=sys.stderr)
 
 
 def cmd_plan(args):
@@ -1052,12 +1097,15 @@ def cmd_plan(args):
         )
         db.commit()
         db.close()
+        _write_plan_md(zid, plan, target_agent)
         zouzhe_log(zid, "zhongshu", "PLAN_SUBMIT",
                    "计划已提交门下省审核",
                    target_agent=target_agent,
                    next_state="reviewing")
         send_discord(zid, _fmt_plan_thread(zid, target_agent, "reviewing", plan_raw), thread_id=thread_id)
-        out({"ok": True, "zouzhe_id": zid, "state": "reviewing", "target_agent": target_agent})
+        plan_file = os.path.join(CHAOTING_DATA_DIR, "docs", "plans", f"{zid}.md")
+        out({"ok": True, "zouzhe_id": zid, "state": "reviewing", "target_agent": target_agent,
+             "plan_file": plan_file if os.path.isfile(plan_file) else None})
     else:
         # Skip review — go directly to executing
         cursor = db.execute(
@@ -1078,12 +1126,15 @@ def cmd_plan(args):
         )
         db.commit()
         db.close()
+        _write_plan_md(zid, plan, target_agent)
         zouzhe_log(zid, "zhongshu", "PLAN_SUBMIT",
                    "计划已提交，直接进入执行（免审）",
                    target_agent=target_agent,
                    next_state="executing")
         send_discord(zid, _fmt_plan_thread(zid, target_agent, "executing", plan_raw), thread_id=thread_id)
-        out({"ok": True, "zouzhe_id": zid, "state": "executing", "target_agent": target_agent})
+        plan_file = os.path.join(CHAOTING_DATA_DIR, "docs", "plans", f"{zid}.md")
+        out({"ok": True, "zouzhe_id": zid, "state": "executing", "target_agent": target_agent,
+             "plan_file": plan_file if os.path.isfile(plan_file) else None})
 
 
 def cmd_progress(args):
@@ -1204,6 +1255,9 @@ def cmd_done(args):
 
     db.close()
 
+    # Append completion section to plan file if it exists
+    _append_plan_completion(zid, output, summary)
+
     # Audit log: record completion in agent's log file
     zouzhe_log(zid, assigned_agent or "unknown", "COMPLETED",
                "✅ 任务完成",
@@ -1213,7 +1267,39 @@ def cmd_done(args):
     # Discord notification for completion
     send_discord(zid, _fmt_done_thread(zid, assigned_agent or "unknown", output, summary), thread_id=thread_id)
 
-    out({"ok": True, "zouzhe_id": zid, "state": "done"})
+    worktree_path = os.path.join(os.path.expanduser("~/self-project"), f"worktree-{zid}")
+    out({"ok": True, "zouzhe_id": zid, "state": "done",
+         "worktree_cleanup_hint": f"git worktree remove {worktree_path} && git branch -D pr/{zid}-*"})
+
+
+def _append_plan_completion(zid, output, summary):
+    """Append a completion section to the plan Markdown file if it exists."""
+    try:
+        plan_path = os.path.join(CHAOTING_DATA_DIR, "docs", "plans", f"{zid}.md")
+        if not os.path.isfile(plan_path):
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        worktree_line = ""
+        # Try to derive worktree path from plan file content is not worth it;
+        # use the standard naming convention instead
+        worktree_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(CHAOTING_DATA_DIR))),
+                                     f"worktree-{zid}")
+        if os.path.isdir(worktree_dir):
+            worktree_line = f"**Worktree cleanup**: `git worktree remove {worktree_dir}` (if applicable)\n"
+        section = (
+            f"\n---\n"
+            f"\n"
+            f"## Completion\n"
+            f"\n"
+            f"**Output**: {output}  \n"
+            f"**Summary**: {summary}  \n"
+            f"**Completed at**: {now}  \n"
+            f"{worktree_line}"
+        )
+        with open(plan_path, "a") as f:
+            f.write(section)
+    except Exception as e:
+        print(f"[WARN] failed to append completion to plan file for {zid}: {e}", file=sys.stderr)
 
 
 def cmd_fail(args):
