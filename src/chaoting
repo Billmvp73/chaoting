@@ -146,6 +146,7 @@ def _dept_prefix(agent: str) -> str:
         "jishi_risk": "【风险给事中】⚠️",
         "jishi_resource": "【资源给事中】💰",
         "jishi_compliance": "【合规给事中】✔️",
+        "yushi": "【御史】🔍",
     }
     return _MAP.get(agent, f"【{agent}】")
 
@@ -1344,6 +1345,356 @@ def cmd_fail(args):
     out({"ok": True, "zouzhe_id": zid, "state": "failed"})
 
 
+def _fmt_push_for_review_thread(zid: str, agent: str, output: str) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    prefix = _dept_prefix(agent)
+    out_lines = (output or "").strip()[:600]
+    return (
+        f"{prefix} 代码已提交御史审核\n\n"
+        f"奏折：`{zid}`\n"
+        f"提交时间：{ts}\n\n"
+        f"**【产出描述（含 PR URL）】**\n{out_lines}\n\n"
+        f"等待御史 🔍 审核中……"
+    )
+
+
+def _fmt_yushi_approve_thread(zid: str) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return (
+        f"【御史】🔍 御史准奏\n\n"
+        f"奏折：`{zid}`\n"
+        f"审核时间：{ts}\n\n"
+        f"**代码审核通过**，任务已完成。等待司礼监 Merge PR。"
+    )
+
+
+def _fmt_yushi_nogo_thread(zid: str, reason: str, count: int, next_state: str) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if next_state == "escalated":
+        state_label = f"⚠️ NOGO 次数已达上限，已呈司礼监裁决"
+    else:
+        state_label = f"退回执行部门修改（第 {count} 次 NOGO）"
+    return (
+        f"【御史】🔍 御史 NOGO\n\n"
+        f"奏折：`{zid}`\n"
+        f"时间：{ts}\n"
+        f"{state_label}\n\n"
+        f"**【NOGO 原因】**\n{reason or '(未说明)'}\n\n"
+        f"请在 PR 中修改代码后，重新调用 `push-for-review` 提交御史审核。"
+    )
+
+
+def cmd_push_for_review(args):
+    """Submit executor's work for yushi PR code review.
+
+    Usage: chaoting push-for-review <zouzhe_id> '<output_with_pr_url>'
+
+    State transition: executing → pr_review
+
+    - Saves output description (must include PR URL) to output field
+    - Clears dispatched_at so dispatcher re-dispatches to yushi
+    - Records liuzhuan: executor → dispatcher | push_for_review
+    - Must be called before chaoting done (yushi-approve triggers done)
+    """
+    if len(args) < 2:
+        out({
+            "ok": False,
+            "error": "usage: chaoting push-for-review <zouzhe_id> '<output_with_pr_url>'",
+        }, ok=False)
+
+    zid = args[0]
+    output = args[1]
+
+    db = get_db()
+    try:
+        row = db.execute("SELECT * FROM zouzhe WHERE id = ?", (zid,)).fetchone()
+        if not row:
+            db.close()
+            out({"ok": False, "error": f"zouzhe {zid} not found"}, ok=False)
+
+        row = dict(row)
+        if row["state"] != "executing":
+            db.close()
+            out({
+                "ok": False,
+                "error": f"push-for-review 只能在 executing 状态调用，当前状态: '{row['state']}'",
+            }, ok=False)
+
+        assigned_agent = row.get("assigned_agent")
+        thread_id = row.get("discord_thread_id")
+
+        cursor = db.execute(
+            "UPDATE zouzhe SET state = 'pr_review', output = ?, "
+            "dispatched_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+            "WHERE id = ? AND state = 'executing' RETURNING id",
+            (output, zid),
+        )
+        if not cursor.fetchone():
+            db.close()
+            out({"ok": False, "error": "状态冲突：CAS 失败，奏折不再是 executing 状态"}, ok=False)
+
+        db.execute(
+            "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+            "VALUES (?, ?, 'dispatcher', 'push_for_review', ?)",
+            (zid, assigned_agent or "executor", f"executing → pr_review，提交御史审核"),
+        )
+        db.commit()
+        db.close()
+
+        zouzhe_log(zid, assigned_agent or "executor", "PUSH_FOR_REVIEW",
+                   "📤 代码已提交御史审核，executing → pr_review",
+                   output=(output or "")[:500])
+
+        send_discord(
+            zid,
+            _fmt_push_for_review_thread(zid, assigned_agent or "executor", output),
+            thread_id=thread_id,
+        )
+
+        out({"ok": True, "zouzhe_id": zid, "state": "pr_review",
+             "note": "dispatcher 将在下次 poll 中派发御史（yushi）审核"})
+
+    except Exception as e:
+        try:
+            db.close()
+        except Exception:
+            pass
+        out({"ok": False, "error": str(e)}, ok=False)
+
+
+def cmd_yushi_approve(args):
+    """Yushi approves the PR review — transitions pr_review → done.
+
+    Usage: chaoting yushi-approve <zouzhe_id>
+
+    Permission: only OPENCLAW_AGENT_ID=yushi may call this.
+    State transition: pr_review → done
+    - Sets summary to '御史准奏'
+    - Records liuzhuan: yushi → dispatcher | approve | 御史准奏
+    - Triggers silijian notification via _check_new_done_failed in dispatcher
+    """
+    if len(args) < 1:
+        out({"ok": False, "error": "usage: chaoting yushi-approve <zouzhe_id>"}, ok=False)
+
+    zid = args[0]
+
+    # Permission check: only yushi
+    caller = os.environ.get("OPENCLAW_AGENT_ID", "")
+    if caller != "yushi":
+        out({
+            "ok": False,
+            "error": f"权限不足：yushi-approve 只有御史（yushi）可调用（当前身份: '{caller}'）",
+        }, ok=False)
+
+    db = get_db()
+    try:
+        row = db.execute("SELECT * FROM zouzhe WHERE id = ?", (zid,)).fetchone()
+        if not row:
+            db.close()
+            out({"ok": False, "error": f"zouzhe {zid} not found"}, ok=False)
+
+        row = dict(row)
+        if row["state"] != "pr_review":
+            db.close()
+            out({
+                "ok": False,
+                "error": f"yushi-approve 只能在 pr_review 状态调用，当前状态: '{row['state']}'",
+            }, ok=False)
+
+        assigned_agent = row.get("assigned_agent")
+        thread_id = row.get("discord_thread_id")
+        output = row.get("output", "")
+
+        cursor = db.execute(
+            "UPDATE zouzhe SET state = 'done', summary = '御史准奏', "
+            "dispatched_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+            "WHERE id = ? AND state = 'pr_review' RETURNING id",
+            (zid,),
+        )
+        if not cursor.fetchone():
+            db.close()
+            out({"ok": False, "error": "状态冲突：CAS 失败，奏折不再是 pr_review 状态"}, ok=False)
+
+        db.execute(
+            "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+            "VALUES (?, 'yushi', 'dispatcher', 'approve', '御史准奏')",
+            (zid,),
+        )
+        db.commit()
+        db.close()
+
+        zouzhe_log(zid, "yushi", "YUSHI_APPROVE",
+                   "✅ 御史准奏，pr_review → done",
+                   output=(output or "")[:500])
+
+        send_discord(
+            zid,
+            _fmt_yushi_approve_thread(zid),
+            thread_id=thread_id,
+        )
+
+        out({"ok": True, "zouzhe_id": zid, "state": "done",
+             "summary": "御史准奏",
+             "note": "dispatcher 将在下次 poll 中通知司礼监"})
+
+    except Exception as e:
+        try:
+            db.close()
+        except Exception:
+            pass
+        out({"ok": False, "error": str(e)}, ok=False)
+
+
+def cmd_yushi_nogo(args):
+    """Yushi rejects the PR — transitions pr_review → executor_revise (or escalated if limit reached).
+
+    Usage: chaoting yushi-nogo <zouzhe_id> '<reason>'
+
+    Permission: only OPENCLAW_AGENT_ID=yushi may call this.
+    State transitions:
+      pr_review → executor_revise  (exec_revise_count < 3)
+      pr_review → escalated        (exec_revise_count >= 3)
+
+    - exec_revise_count incremented by 1
+    - Clears dispatched_at so dispatcher re-dispatches to assigned_agent
+    - Records liuzhuan: yushi → executor | nogo | reason
+    """
+    if len(args) < 2:
+        out({"ok": False, "error": "usage: chaoting yushi-nogo <zouzhe_id> '<reason>'"}, ok=False)
+
+    zid = args[0]
+    reason = args[1]
+
+    # Permission check: only yushi
+    caller = os.environ.get("OPENCLAW_AGENT_ID", "")
+    if caller != "yushi":
+        out({
+            "ok": False,
+            "error": f"权限不足：yushi-nogo 只有御史（yushi）可调用（当前身份: '{caller}'）",
+        }, ok=False)
+
+    db = get_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM zouzhe WHERE id = ?", (zid,)).fetchone()
+        if not row:
+            db.execute("ROLLBACK")
+            db.close()
+            out({"ok": False, "error": f"zouzhe {zid} not found"}, ok=False)
+
+        row = dict(row)
+        if row["state"] != "pr_review":
+            db.execute("ROLLBACK")
+            db.close()
+            out({
+                "ok": False,
+                "error": f"yushi-nogo 只能在 pr_review 状态调用，当前状态: '{row['state']}'",
+            }, ok=False)
+
+        assigned_agent = row.get("assigned_agent")
+        thread_id = row.get("discord_thread_id")
+        current_count = (row.get("exec_revise_count") or 0)
+
+        # Check NOGO limit: exec_revise_count >= 3 → escalate
+        YUSHI_NOGO_LIMIT = 3
+        if current_count >= YUSHI_NOGO_LIMIT:
+            # Escalate to silijian
+            escalated_msg = (
+                f"御史连续 NOGO {YUSHI_NOGO_LIMIT} 次，已呈司礼监裁决\n"
+                f"最近 NOGO 原因：{reason[:200]}"
+            )
+            cursor = db.execute(
+                "UPDATE zouzhe SET state = 'escalated', error = ?, "
+                "dispatched_at = NULL, "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+                "WHERE id = ? AND state = 'pr_review' RETURNING id",
+                (escalated_msg, zid),
+            )
+            if not cursor.fetchone():
+                db.execute("ROLLBACK")
+                db.close()
+                out({"ok": False, "error": "状态冲突：CAS 失败"}, ok=False)
+
+            db.execute(
+                "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+                "VALUES (?, 'yushi', 'silijian', 'nogo_escalate', ?)",
+                (zid, f"御史 NOGO 达上限（{YUSHI_NOGO_LIMIT}次），呈司礼监裁决：{reason[:200]}"),
+            )
+            db.execute("COMMIT")
+            db.close()
+
+            zouzhe_log(zid, "yushi", "YUSHI_NOGO_ESCALATE",
+                       f"⚠️ 御史 NOGO 达上限（{YUSHI_NOGO_LIMIT}次），escalate → 司礼监",
+                       reason=reason)
+            send_discord(
+                zid,
+                _fmt_yushi_nogo_thread(zid, reason, current_count + 1, "escalated"),
+                thread_id=thread_id,
+            )
+            out({
+                "ok": True,
+                "zouzhe_id": zid,
+                "state": "escalated",
+                "exec_revise_count": current_count,
+                "reason": reason,
+                "note": f"御史 NOGO 次数已达上限（{YUSHI_NOGO_LIMIT}），已呈司礼监裁决",
+            })
+        else:
+            # Transition to executor_revise
+            new_count = current_count + 1
+            cursor = db.execute(
+                "UPDATE zouzhe SET state = 'executor_revise', "
+                "exec_revise_count = exec_revise_count + 1, "
+                "dispatched_at = NULL, "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+                "WHERE id = ? AND state = 'pr_review' RETURNING id",
+                (zid,),
+            )
+            if not cursor.fetchone():
+                db.execute("ROLLBACK")
+                db.close()
+                out({"ok": False, "error": "状态冲突：CAS 失败"}, ok=False)
+
+            db.execute(
+                "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+                "VALUES (?, 'yushi', ?, 'nogo', ?)",
+                (zid, assigned_agent or "executor",
+                 f"御史 NOGO（第 {new_count} 次）：{reason[:200]}"),
+            )
+            db.execute("COMMIT")
+            db.close()
+
+            zouzhe_log(zid, "yushi", "YUSHI_NOGO",
+                       f"❌ 御史 NOGO（第 {new_count} 次），pr_review → executor_revise",
+                       reason=reason,
+                       exec_revise_count=new_count)
+            send_discord(
+                zid,
+                _fmt_yushi_nogo_thread(zid, reason, new_count, "executor_revise"),
+                thread_id=thread_id,
+            )
+            out({
+                "ok": True,
+                "zouzhe_id": zid,
+                "state": "executor_revise",
+                "exec_revise_count": new_count,
+                "reason": reason,
+                "note": f"dispatcher 将在下次 poll 中重新派发给 {assigned_agent or '原执行部门'}，"
+                        f"请修改代码后重新调用 push-for-review",
+            })
+
+    except Exception as e:
+        try:
+            db.execute("ROLLBACK")
+        except Exception:
+            pass
+        try:
+            db.close()
+        except Exception:
+            pass
+        out({"ok": False, "error": str(e)}, ok=False)
+
+
 def cmd_decide(args):
     """司礼监裁决 escalated 奏折：approve / reject / revise。
 
@@ -2000,6 +2351,9 @@ COMMANDS = {
     "progress": cmd_progress,
     "done": cmd_done,
     "fail": cmd_fail,
+    "push-for-review": cmd_push_for_review,
+    "yushi-approve": cmd_yushi_approve,
+    "yushi-nogo": cmd_yushi_nogo,
     "context": cmd_context,
     "lesson": cmd_lesson,
     "vote": cmd_vote,

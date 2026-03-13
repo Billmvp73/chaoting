@@ -449,6 +449,77 @@ def dispatch_agent(agent_id: str, zouzhe_id: str, timeout_sec: int, msg: str = N
     log.info("Dispatched %s to agent %s (timeout=%ds)", zouzhe_id, agent_id, timeout_sec)
 
 
+def _dispatch_to_yushi(db, zouzhe):
+    """CAS lock + dispatch pr_review task to yushi agent.
+
+    Builds a yushi-specific message containing:
+    - Task ID, title, PR URL (extracted from output field)
+    - acceptance_criteria (extracted from plan JSON)
+    - 5 review dimensions
+    - Command instructions: yushi-approve / yushi-nogo
+    """
+    affected = db.execute(
+        "UPDATE zouzhe SET dispatched_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+        "WHERE id = ? AND state = 'pr_review' AND dispatched_at IS NULL",
+        (zouzhe["id"],),
+    ).rowcount
+    if affected == 0:
+        return  # Already dispatched (CAS protection)
+    db.commit()
+
+    zid = zouzhe["id"]
+    title = zouzhe["title"] or ""
+    output = zouzhe["output"] or "(产出未记录)"
+    timeout_sec = zouzhe["timeout_sec"] or 600
+
+    # Extract acceptance_criteria from plan JSON
+    acceptance_criteria = "(未提供验收标准)"
+    try:
+        if zouzhe["plan"]:
+            plan_obj = json.loads(zouzhe["plan"])
+            ac = plan_obj.get("acceptance_criteria")
+            if ac:
+                acceptance_criteria = str(ac)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Build yushi dispatch message
+    msg = (
+        f"🔍 御史审核令\n\n"
+        f"奏折：{zid}\n"
+        f"标题：{title}\n\n"
+        f"【产出描述 / PR URL】\n"
+        f"{output}\n\n"
+        f"【验收标准】\n"
+        f"{acceptance_criteria}\n\n"
+        f"【审核维度】\n"
+        f"1. 代码正确性 — 逻辑正确，无明显 Bug 或边界错误\n"
+        f"2. 安全风险 — 无注入漏洞、权限提升或敏感数据泄露\n"
+        f"3. 规范合规 — 命名规范、代码风格、注释质量\n"
+        f"4. 测试覆盖 — 新功能有测试，覆盖边界情况和失败路径\n"
+        f"5. 架构一致性 — 变更符合现有系统架构和设计模式\n\n"
+        f"【审核指令】\n"
+        f"准奏：{CHAOTING_CLI} yushi-approve {zid}\n"
+        f"NOGO： {CHAOTING_CLI} yushi-nogo {zid} '具体原因（含文件名:行号）'\n\n"
+        f"⚠️ 必须用 exec 工具运行上述命令。审核后务必在 Discord Thread 发布详细审核意见。"
+    )
+
+    db.execute(
+        "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+        "VALUES (?, 'dispatcher', 'yushi', 'dispatch_yushi_review', ?)",
+        (zid, "pr_review → dispatched to yushi"),
+    )
+    db.commit()
+
+    zouzhe_log(zid, "dispatcher", "DISPATCH",
+               "📤 派发给御史（yushi）审核",
+               content=f"TARGET_AGENT: yushi\nTIMEOUT: {timeout_sec}s",
+               actor="dispatcher", remark="pr_review → yushi dispatch")
+
+    dispatch_agent("yushi", zid, timeout_sec, msg=msg)
+    log.info("Dispatched pr_review %s to yushi", zid)
+
+
 
 
 
@@ -1037,7 +1108,59 @@ def poll_and_dispatch():
         for row in reviewing_all:
             check_votes(db, row)
 
-        # 5. Detect done/failed/timeout from CLI commands and enqueue notifications
+        # 5a. Detect pr_review + dispatched_at IS NULL → dispatch to yushi
+        pr_review_undispatched = db.execute(
+            "SELECT * FROM zouzhe WHERE state = 'pr_review' AND dispatched_at IS NULL"
+        ).fetchall()
+        for row in pr_review_undispatched:
+            _dispatch_to_yushi(db, row)
+
+        # 5b. Detect executor_revise + dispatched_at IS NULL + assigned_agent IS NOT NULL
+        #     → re-dispatch to assigned_agent with NOGO context
+        executor_revise_rows = db.execute(
+            "SELECT * FROM zouzhe WHERE state = 'executor_revise' "
+            "AND dispatched_at IS NULL AND assigned_agent IS NOT NULL"
+        ).fetchall()
+        for row in executor_revise_rows:
+            zid = row["id"]
+            assigned_agent = row["assigned_agent"]
+            timeout_sec = row["timeout_sec"] or 600
+
+            cursor = db.execute(
+                "UPDATE zouzhe SET dispatched_at = strftime('%Y-%m-%dT%H:%M:%S','now'), "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+                "WHERE id = ? AND state = 'executor_revise' AND dispatched_at IS NULL RETURNING id",
+                (zid,),
+            )
+            claimed = cursor.fetchone()
+            if claimed:
+                db.commit()
+                # Build NOGO context message
+                exec_revise_count = row["exec_revise_count"] or 0
+                output = row["output"] or "(未记录产出)"
+                nogo_msg = (
+                    f"⚠️ 御史 NOGO 通知（第 {exec_revise_count} 次）\n\n"
+                    f"奏折：{zid}\n"
+                    f"御史已审核你的 PR 并返回 NOGO，请修改代码。\n\n"
+                    f"【你的上次产出 / PR URL】\n{output}\n\n"
+                    f"请在 PR 上修改代码，重新 push，然后调用：\n"
+                    f"  {CHAOTING_CLI} push-for-review {zid} '<新产出描述+PR URL>'\n\n"
+                    f"修改完成后 push-for-review 将重新提交御史审核。\n\n"
+                    f"⚠️ 请用 exec 工具运行上述命令。"
+                )
+                db.execute(
+                    "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+                    "VALUES (?, 'dispatcher', ?, 'dispatch_executor_revise', ?)",
+                    (zid, assigned_agent, f"executor_revise → re-dispatch to {assigned_agent}"),
+                )
+                db.commit()
+                zouzhe_log(zid, "dispatcher", "DISPATCH",
+                           f"📤 御史 NOGO 后重派给 {assigned_agent}",
+                           content=f"TARGET_AGENT: {assigned_agent}\nNOGO_COUNT: {exec_revise_count}",
+                           actor="dispatcher", remark="executor_revise → re-dispatch")
+                dispatch_agent(assigned_agent, zid, timeout_sec, msg=nogo_msg)
+
+        # 6. Detect done/failed/timeout from CLI commands and enqueue notifications
         _check_new_done_failed(db)
     finally:
         db.close()
@@ -1107,6 +1230,41 @@ def check_timeouts():
         """).fetchall()
         for row in reviewing_rows:
             handle_review_timeout(db, row)
+
+        # Handle pr_review state timeouts → escalated
+        pr_review_timeout_rows = db.execute("""
+            SELECT * FROM zouzhe
+            WHERE state = 'pr_review'
+              AND dispatched_at IS NOT NULL
+              AND (julianday('now') - julianday(dispatched_at)) * 86400 > timeout_sec
+        """).fetchall()
+        for row in pr_review_timeout_rows:
+            zid = row["id"]
+            timeout_msg = (
+                f"御史审核超时（超过 {row['timeout_sec']}s），已呈司礼监裁决"
+            )
+            affected = db.execute(
+                "UPDATE zouzhe SET state = 'escalated', error = ?, "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+                "WHERE id = ? AND state = 'pr_review'",
+                (timeout_msg, zid),
+            ).rowcount
+            if affected > 0:
+                db.execute(
+                    "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+                    "VALUES (?, 'dispatcher', 'silijian', 'pr_review_timeout', ?)",
+                    (zid, f"御史审核超时 {row['timeout_sec']}s → escalated"),
+                )
+                db.commit()
+                zouzhe_log(zid, "dispatcher", "TIMEOUT",
+                           "⏰ 御史审核超时，pr_review → escalated",
+                           content=f"TIMEOUT_SEC: {row['timeout_sec']}",
+                           actor="dispatcher")
+                log.warning("pr_review timeout %s → escalated", zid)
+                _cli_notify(zid,
+                            f"⏰ 御史审核超时\n\n"
+                            f"📜 `{zid}` — 御史未在规定时间内完成审核\n"
+                            f"🏛️ 已呈司礼监裁决")
     finally:
         db.close()
 
