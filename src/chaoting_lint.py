@@ -28,6 +28,17 @@ EXECUTOR_WORKFLOW_FILES = [
     "WORKFLOW-xingbu.md",
 ]
 
+# Executor SOUL files — only these agents run long commands and require 'timeout'
+# Reviewer/planner agents (jishi_*, yushi, zhongshu, silijian, menxia) skip timeout check
+EXECUTOR_SOUL_FILES = [
+    "bingbu.md",
+    "gongbu.md",
+    "hubu.md",
+    "libu.md",
+    "libu_hr.md",
+    "xingbu.md",
+]
+
 SOUL_MAX_LINES = 80
 SOUL_DOC_REF_THRESHOLD = 60
 
@@ -66,20 +77,31 @@ def rule1_soul_line_count():
 
 
 # ---------------------------------------------------------------------------
-# Rule 2: SOUL structure — must contain '职责', CLI keyword, timeout keyword
+# Rule 2: SOUL structure — must contain responsibilities section, CLI keyword, timeout keyword
 # ---------------------------------------------------------------------------
 def rule2_soul_structure():
-    """Rule 2: SOUL structure — must contain '职责', CLI/命令示例, and 'timeout'."""
+    """Rule 2: SOUL structure — must contain responsibilities section, CLI keyword, and 'timeout' (executors only)."""
     violations = []
     for name, path in get_soul_files():
         content = read_file(path)
         missing = []
-        if "职责" not in content:
+        # Accept both Chinese and English responsibility headings
+        has_responsibilities = (
+            "职责" in content
+            or "Responsibilities" in content
+            or "## Role" in content
+        )
+        if not has_responsibilities:
             missing.append("missing '职责' section")
-        has_cli = ("命令示例" in content) or ("CLI" in content)
+        has_cli = (
+            ("命令示例" in content)
+            or ("CLI" in content)
+            or ("Commands" in content)
+        )
         if not has_cli:
             missing.append("missing CLI/命令示例 section")
-        if "timeout" not in content.lower():
+        # Timeout check: only required for executor agents
+        if name in EXECUTOR_SOUL_FILES and "timeout" not in content.lower():
             missing.append("missing 'timeout' keyword")
         if missing:
             violations.append(f"  {name}: " + ", ".join(missing))
@@ -89,10 +111,14 @@ def rule2_soul_structure():
 
 
 # ---------------------------------------------------------------------------
-# Rule 3: SOUL doc reference — files >60 lines must contain '见 docs/'
+# Rule 3: SOUL doc reference — files >60 lines must contain a docs/ reference
 # ---------------------------------------------------------------------------
 def rule3_soul_doc_reference():
-    """Rule 3: SOUL doc reference — files >60 lines must contain '见 docs/'."""
+    """Rule 3: SOUL doc reference — files >60 lines must contain a docs/ reference.
+
+    Accepts both Chinese '见 docs/' and bare 'docs/' path occurrences (e.g. backtick
+    format or English markdown links) to avoid false positives on non-Chinese souls.
+    """
     violations = []
     for name, path in get_soul_files():
         with open(path, "r", encoding="utf-8") as f:
@@ -100,7 +126,7 @@ def rule3_soul_doc_reference():
         count = len(lines)
         if count > SOUL_DOC_REF_THRESHOLD:
             content = "".join(lines)
-            if "见 docs/" not in content:
+            if "见 docs/" not in content and "docs/" not in content:
                 violations.append(f"  {name}: {count} lines but no '见 docs/' reference")
     if violations:
         return False, "FAIL — Rule 3: SOUL doc reference\n" + "\n".join(violations)
