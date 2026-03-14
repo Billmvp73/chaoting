@@ -2404,27 +2404,35 @@ def cmd_vote(args):
 
         current_round = (zouzhe["revise_count"] or 0) + 1
 
-        cursor = db.execute(
-            "INSERT OR IGNORE INTO toupiao (zouzhe_id, round, jishi_id, agent_id, vote, reason) "
+        # Use INSERT OR REPLACE for idempotent votes.
+        # The UNIQUE index on (zouzhe_id, round, jishi_id) ensures that if the same
+        # jishi votes again (e.g. after a dispatcher restart re-dispatch), the existing
+        # row is replaced rather than rejected.  This prevents duplicate-vote counts
+        # while still allowing recovery from partial-vote scenarios.
+        existing = db.execute(
+            "SELECT vote FROM toupiao WHERE zouzhe_id = ? AND round = ? AND jishi_id = ?",
+            (zid, current_round, jishi_id),
+        ).fetchone()
+
+        db.execute(
+            "INSERT OR REPLACE INTO toupiao (zouzhe_id, round, jishi_id, agent_id, vote, reason) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (zid, current_round, jishi_id, agent_id, vote, reason),
         )
 
-        if cursor.rowcount == 0:
-            db.execute("ROLLBACK")
-            db.close()
-            out({"ok": False, "error": "already voted this round"}, ok=False)
+        is_update = existing is not None
+        action_label = "vote_updated" if is_update else "vote"
 
         db.execute("COMMIT")
         thread_id = zouzhe["discord_thread_id"]
         db.close()
         zouzhe_log(zid, jishi_id, "VOTE",
-                   vote.upper(),
+                   f"{vote.upper()}{' (updated)' if is_update else ''}",
                    jishi=jishi_id,
                    round=current_round,
                    reason=reason)
         send_discord(zid, _fmt_vote_thread(zid, jishi_id, vote, reason, current_round), thread_id=thread_id)
-        out({"ok": True, "action": "vote", "zouzhe_id": zid, "vote": vote,
+        out({"ok": True, "action": action_label, "zouzhe_id": zid, "vote": vote,
              "jishi_id": jishi_id, "round": current_round})
     except Exception as e:
         try:
