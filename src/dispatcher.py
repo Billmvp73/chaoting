@@ -519,6 +519,15 @@ def _dispatch_to_yushi(db, zouzhe):
     dispatch_agent("yushi", zid, timeout_sec, msg=msg)
     log.info("Dispatched pr_review %s to yushi", zid)
 
+    # Notify Discord thread that yushi review has started
+    import re as _re
+    _pr_url_match = _re.search(r'https://github\.com/\S+', output)
+    _pr_url = _pr_url_match.group(0) if _pr_url_match else output[:100]
+    _cli_notify(
+        zid,
+        f"🔍 御史审核开始\n\n📜 `{zid}` — {title}\n🧾 PR URL: {_pr_url}\n⏳ 等待御史（yushi）代码审查...",
+    )
+
 
 
 
