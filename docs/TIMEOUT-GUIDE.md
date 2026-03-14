@@ -91,3 +91,35 @@ $CHAOTING_CLI new "XL task title" "description" --review 2 --priority normal --t
 ## When in Doubt
 
 When unsure between two sizes, always choose the larger one. A task that completes early wastes nothing; a task that times out mid-execution may leave partial state requiring cleanup.
+
+---
+
+## Emergency Termination
+
+The `fail` command can force-terminate **any non-terminal ticket** regardless of its current state.
+
+**Supported states for force-fail:**
+`planning`, `executing`, `reviewing`, `escalated`, `pr_review`, `executor_revise`
+
+**Terminal states (cannot be force-failed):**
+`done`, `failed`, `timeout`
+
+### Usage
+
+```bash
+export CHAOTING_WORKSPACE=/path/to/workspace CHAOTING_DIR=/path/to/.chaoting OPENCLAW_AGENT_ID=<dept>
+$CHAOTING_CLI fail <ticket_id> '<reason>'
+```
+
+### Common Use Cases
+
+| Situation | Recommended Action |
+|-----------|-------------------|
+| Dispatcher restart left a `reviewing` ticket stuck | `fail <id> 'dispatcher restarted, force-terminating stuck review'` |
+| `escalated` ticket with no available decision-maker | `fail <id> 'no decision-maker available, escalation terminated'` |
+| `pr_review` blocked by external CI with no ETA | `fail <id> 'PR review blocked by external CI, force-terminating'` |
+| `executor_revise` agent unresponsive | `fail <id> 'executor agent unresponsive during revision'` |
+
+### Why This Matters
+
+Without emergency termination, a ticket stuck in `reviewing` or `escalated` must wait for its full timeout (up to 3600s) before the system can recover. Use `fail` to restore system flow immediately.

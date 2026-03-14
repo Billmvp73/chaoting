@@ -1314,13 +1314,13 @@ def cmd_fail(args):
     cursor = db.execute(
         "UPDATE zouzhe SET state = 'failed', error = ?, "
         "dispatched_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
-        "WHERE id = ? AND state IN ('planning', 'executing') RETURNING id",
+        "WHERE id = ? AND state IN ('planning', 'executing', 'reviewing', 'escalated', 'pr_review', 'executor_revise') RETURNING id",
         (reason, zid),
     )
     row = cursor.fetchone()
     if not row:
         db.close()
-        out({"ok": False, "error": "state conflict — zouzhe not in active state"}, ok=False)
+        out({"ok": False, "error": "state conflict — zouzhe is already in a terminal state (done/failed/timeout)"}, ok=False)
 
     zz = db.execute("SELECT assigned_agent, discord_thread_id FROM zouzhe WHERE id = ?", (zid,)).fetchone()
     assigned_agent = zz["assigned_agent"] if zz else None
