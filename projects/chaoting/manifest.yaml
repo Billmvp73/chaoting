@@ -1,0 +1,98 @@
+# ${CHAOTING_DIR}/projects/chaoting/manifest.yaml
+# Phase 0: 将 009 hardcode 逻辑迁移到 manifest-based
+# 向后兼容验证：此 manifest 应产生与 009 完全相同的部署行为
+
+apiVersion: chaoting.io/v1alpha1
+kind: ProjectManifest
+
+metadata:
+  project_id: chaoting
+  name: Chaoting Orchestration System
+  version: "1.0.0"
+  description: >
+    多 Agent 任务编排系统。
+    本 manifest 是 ZZ-20260314-010 Phase 0 产物，
+    将 ZZ-20260314-009 auto-deploy-spec.md 的 hardcode 逻辑迁移至 manifest-based 架构。
+  owner: bingbu
+  repo: https://github.com/your-org/chaoting
+  tags: [platform, orchestration, dispatcher]
+
+spec:
+  deploy:
+    # 对应 009 § 三 Step 3：cp src/chaoting + systemctl restart
+    type: systemd_user
+    service_name: chaoting-dispatcher
+    binary_src: src/chaoting           # 相对于 repo_path
+    binary_dest: "${CHAOTING_DIR}/src/chaoting"
+    repo_path: "${HOME}/self-project/chaoting"
+    timeout: 300                       # 与 009 § 2.2 --timeout 默认值一致
+    idempotency: sha256
+    requires_restart: true
+    # 对应 009 § 三 Step 3 最后：如有 init_db 变更，运行 migrate
+    post_deploy_cmd: >
+      python3 ${CHAOTING_DIR}/src/init_db.py --check-migrate
+
+  health:
+    # 对应 009 § 四（Health Check 规格）三层结构
+    type: composite
+    check_interval_sec: 30
+    layer1_timeout_sec: 5             # 与 009 § 四 Layer 1 "< 5秒" 一致
+    layer2_timeout_sec: 30            # 与 009 § 四 Layer 2 "< 30秒" 一致
+    layer3_timeout_sec: 120           # 与 009 § 四 Layer 3 "< 120秒" 一致
+    checks:
+      # Layer 1 检查 1：dispatcher 进程是否运行
+      - name: dispatcher_running
+        type: systemctl
+        service_name: chaoting-dispatcher
+      # Layer 1 检查 2：DB 可读写
+      - name: db_writable
+        type: custom_script
+        layer1_cmd: "${CHAOTING_DIR}/src/chaoting health --check db"
+      # Layer 1 检查 3：CLI 可响应
+      - name: cli_responsive
+        type: custom_script
+        layer1_cmd: "${CHAOTING_DIR}/src/chaoting version"
+        # Layer 2 检查 4：pull 命令可正常返回
+        layer2_cmd: "${CHAOTING_DIR}/src/chaoting health --check pull-readonly"
+      # Layer 2 检查 5：dispatcher 能检测到 pending 任务
+      - name: dispatcher_poll
+        type: custom_script
+        layer2_cmd: "${CHAOTING_DIR}/src/chaoting health --check dispatcher-poll"
+
+  logs:
+    # 对应 chaoting-dispatcher 的 journalctl 日志
+    type: journalctl
+    service_name: chaoting-dispatcher
+    lines: 200
+    filter_rules:
+      - pattern: "^DEBUG"            # 默认过滤 DEBUG（可用 --filter 覆盖）
+        action: exclude
+
+  anomaly:
+    rules:
+      # 规则 1：dispatcher 崩溃检测（对应 troubleshoot-decision-tree.md § C1）
+      - id: dispatcher_crash
+        name: Dispatcher 进程崩溃
+        metric: systemd_cpu_usage
+        threshold: 0                  # CPU 使用率为 0 且服务不在 active = 崩溃
+        for: "30s"
+        action: L1                    # 对应 C1：systemd 自动重启（L1，无需通知）
+        message: "chaoting-dispatcher 可能已崩溃，systemd 将自动重启"
+
+      # 规则 2：日志错误率飙升（对应 troubleshoot-decision-tree.md § D3）
+      - id: high_error_rate
+        name: 日志错误率过高
+        metric: log_error_rate
+        log_source: chaoting-dispatcher
+        error_pattern: "ERROR|CRITICAL|Traceback"
+        threshold: 10                 # 每分钟超过 10 条错误日志
+        for: "5m"
+        action: L2
+        message: "chaoting-dispatcher 错误率过高（>{threshold}/min），请检查日志"
+
+  rollback:
+    # 对应 009 § 六（回滚机制）
+    strategy: binary_backup
+    backup_dir: "${CHAOTING_DIR}/backups"
+    keep_versions: 3                  # 与 009 § 六.2 "保留最近 3 个" 一致
+    pre_check_disk_mb: 10             # 与 009 § 六.2 "磁盘剩余 > 10MB" 一致
