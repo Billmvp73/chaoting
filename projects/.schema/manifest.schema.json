@@ -1,0 +1,263 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://chaoting.io/schemas/project-manifest/v1alpha1",
+  "title": "ProjectManifest",
+  "description": "Chaoting Platform Engineering — Project Manifest Schema v1alpha1",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "enum": ["chaoting.io/v1alpha1"],
+      "description": "Manifest API version"
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["ProjectManifest"]
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["project_id", "name", "version"],
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,30}$",
+          "description": "Unique project identifier"
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "Semantic version (major.minor.patch)"
+        },
+        "description": { "type": "string" },
+        "owner": { "type": "string" },
+        "repo": { "type": "string", "format": "uri" },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "spec": {
+      "type": "object",
+      "required": ["deploy", "health", "logs"],
+      "properties": {
+        "deploy": { "$ref": "#/definitions/DeploySpec" },
+        "health": { "$ref": "#/definitions/HealthSpec" },
+        "logs": { "$ref": "#/definitions/LogsSpec" },
+        "anomaly": { "$ref": "#/definitions/AnomalySpec" },
+        "rollback": { "$ref": "#/definitions/RollbackSpec" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "definitions": {
+    "DeploySpec": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["systemd_user", "docker", "script", "git-pull"]
+        },
+        "timeout": { "type": "integer", "minimum": 10, "maximum": 3600, "default": 300 },
+        "idempotency": {
+          "type": "string",
+          "enum": ["sha256", "commit_sha", "image_digest", "none"],
+          "default": "sha256"
+        },
+        "requires_restart": { "type": "boolean", "default": true },
+        "pre_deploy_cmd": { "type": "string" },
+        "post_deploy_cmd": { "type": "string" },
+        "service_name": { "type": "string" },
+        "binary_src": { "type": "string" },
+        "binary_dest": { "type": "string" },
+        "repo_path": { "type": "string" },
+        "compose_file": { "type": "string" },
+        "service_names": { "type": "array", "items": { "type": "string" } },
+        "registry_pull": { "type": "boolean", "default": false },
+        "pull_cmd": { "type": "string" },
+        "up_cmd": { "type": "string" },
+        "cmd": { "type": "string" },
+        "rollback_cmd": { "type": "string" },
+        "working_dir": { "type": "string" },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "branch": { "type": "string", "default": "main" },
+        "build_cmd": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "script" } } },
+          "then": { "required": ["cmd", "rollback_cmd"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "git-pull" } } },
+          "then": { "required": ["repo_path"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "docker" } } },
+          "then": { "required": ["compose_file"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "systemd_user" } } },
+          "then": { "required": ["service_name"] }
+        }
+      ]
+    },
+    "HealthSpec": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["systemctl", "curl", "custom_script", "composite"]
+        },
+        "check_interval_sec": { "type": "integer", "minimum": 5, "default": 30 },
+        "layer1_timeout_sec": { "type": "integer", "minimum": 1, "default": 5 },
+        "layer2_timeout_sec": { "type": "integer", "minimum": 1, "default": 30 },
+        "layer3_timeout_sec": { "type": "integer", "minimum": 1, "default": 120 },
+        "service_name": { "type": "string" },
+        "endpoint": { "type": "string", "format": "uri" },
+        "expected_status": { "type": "array", "items": { "type": "integer" } },
+        "expected_body_contains": { "type": "string" },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "layer1_cmd": { "type": "string" },
+        "layer2_cmd": { "type": "string" },
+        "layer3_cmd": { "type": "string" },
+        "working_dir": { "type": "string" },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "type"],
+            "properties": {
+              "name": { "type": "string" },
+              "type": { "type": "string", "enum": ["systemctl", "curl", "custom_script"] }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "systemctl" } } },
+          "then": { "required": ["service_name"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "curl" } } },
+          "then": { "required": ["endpoint"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "custom_script" } } },
+          "then": { "required": ["layer1_cmd"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "composite" } } },
+          "then": { "required": ["checks"] }
+        }
+      ]
+    },
+    "LogsSpec": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["journalctl", "file", "docker", "api"]
+        },
+        "lines": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 100 },
+        "filter_rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["pattern", "action"],
+            "properties": {
+              "pattern": { "type": "string" },
+              "action": { "type": "string", "enum": ["include", "exclude"] }
+            }
+          }
+        },
+        "service_name": { "type": "string" },
+        "path": { "type": "string" },
+        "encoding": { "type": "string", "default": "utf-8" },
+        "container_name": { "type": "string" },
+        "compose_file": { "type": "string" },
+        "endpoint": { "type": "string" },
+        "method": { "type": "string", "enum": ["GET", "POST"], "default": "GET" },
+        "headers": { "type": "object" },
+        "params_template": { "type": "object" },
+        "response_path": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "journalctl" } } },
+          "then": { "required": ["service_name"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "file" } } },
+          "then": { "required": ["path"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "docker" } } },
+          "then": { "required": ["container_name"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "api" } } },
+          "then": { "required": ["endpoint"] }
+        }
+      ]
+    },
+    "AnomalySpec": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/AnomalyRule" }
+        }
+      }
+    },
+    "AnomalyRule": {
+      "type": "object",
+      "required": ["id", "name", "metric", "threshold", "for", "action"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$" },
+        "name": { "type": "string" },
+        "metric": {
+          "type": "string",
+          "enum": ["systemd_cpu_usage", "log_error_rate", "http_response_time", "custom_command_exit_code"]
+        },
+        "threshold": { "type": "number" },
+        "for": { "type": "string", "pattern": "^\\d+[smh]$" },
+        "action": { "type": "string", "enum": ["L1", "L2", "L3"] },
+        "message": { "type": "string" },
+        "metric_cmd": { "type": "string" },
+        "log_source": { "type": "string" },
+        "error_pattern": { "type": "string" },
+        "http_endpoint": { "type": "string" }
+      }
+    },
+    "RollbackSpec": {
+      "type": "object",
+      "required": ["strategy"],
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": ["binary_backup", "docker_tag", "git_revert", "custom_script"]
+        },
+        "keep_versions": { "type": "integer", "minimum": 1, "maximum": 10, "default": 3 },
+        "backup_dir": { "type": "string" },
+        "pre_check_disk_mb": { "type": "integer", "minimum": 1, "default": 10 },
+        "registry": { "type": "string" },
+        "cmd": { "type": "string" },
+        "working_dir": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "strategy": { "const": "custom_script" } } },
+          "then": { "required": ["cmd"] }
+        }
+      ]
+    }
+  }
+}

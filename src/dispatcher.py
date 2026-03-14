@@ -62,6 +62,10 @@ STATE_TRANSITIONS = {
     "revising": ("planning", "zhongshu"),
 }
 
+# Platform Engineering (Phase 0) - deploy 接入点
+# 仅在 CHAOTING_PLATFORM_ENABLED=1 时启用（Phase 0 验证用）
+_PLATFORM_ENABLED = os.environ.get("CHAOTING_PLATFORM_ENABLED", "0") == "1"
+
 POLL_INTERVAL = 5
 TIMEOUT_CHECK_INTERVAL = 30
 
@@ -990,6 +994,63 @@ def handle_review_timeout(db, zouzhe):
         # Next poll cycle check_votes will see all votes complete
 
 
+def _check_pending_deploys(db):
+    """
+    Phase 0 deploy 接入点：检测 deploy_state=pending 的奏折，调用 platform.deploy()。
+    仅 dispatcher 调用（OPENCLAW_AGENT_ID=dispatcher 权限专属）。
+    """
+    try:
+        pending = db.execute(
+            "SELECT id, plan FROM zouzhe WHERE deploy_state = 'pending' AND state = 'done' LIMIT 1"
+        ).fetchone()
+        if not pending:
+            return
+
+        zouzhe_id = pending["id"]
+        plan_str = pending["plan"] or "{}"
+        try:
+            plan = json.loads(plan_str)
+        except Exception:
+            plan = {}
+
+        project_id = plan.get("project_id", "chaoting")
+
+        # CAS: 更新为 deploying（避免重复触发）
+        cursor = db.execute(
+            "UPDATE zouzhe SET deploy_state='deploying', updated_at=strftime('%Y-%m-%dT%H:%M:%S','now') "
+            "WHERE id=? AND deploy_state='pending' RETURNING id",
+            (zouzhe_id,),
+        )
+        claimed = cursor.fetchone()
+        if not claimed:
+            return  # 被其他进程抢先
+        db.commit()
+
+        log.info("Starting platform deploy for %s (project=%s)", zouzhe_id, project_id)
+
+        from chaoting_platform.interface import PlatformInterface
+        platform = PlatformInterface()
+        result = platform.deploy(project_id=project_id, zouzhe_id=zouzhe_id)
+
+        new_state = "deployed" if result.ok else "failed"
+        db.execute(
+            "UPDATE zouzhe SET deploy_state=?, updated_at=strftime('%Y-%m-%dT%H:%M:%S','now') WHERE id=?",
+            (new_state, zouzhe_id),
+        )
+        db.commit()
+
+        db.execute(
+            "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) VALUES (?, 'dispatcher', 'system', 'deploy', ?)",
+            (zouzhe_id, f"exit_code={result.exit_code} deploy_result={result.deploy_result}"),
+        )
+        db.commit()
+
+        log.info("Deploy completed for %s: exit_code=%d result=%s", zouzhe_id, result.exit_code, result.deploy_result)
+
+    except Exception as e:
+        log.error("_check_pending_deploys error: %s", e, exc_info=True)
+
+
 def poll_and_dispatch():
     db = get_db()
     try:
@@ -1173,6 +1234,10 @@ def poll_and_dispatch():
 
         # 6. Detect done/failed/timeout from CLI commands and enqueue notifications
         _check_new_done_failed(db)
+
+        # 7. check_pending_deploys: deploy_state=pending の奏折 → platform.deploy()
+        if _PLATFORM_ENABLED:
+            _check_pending_deploys(db)
     finally:
         db.close()
 
