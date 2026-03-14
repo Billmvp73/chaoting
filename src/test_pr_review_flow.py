@@ -136,6 +136,15 @@ def _get_state(db_path, zid):
     return dict(row) if row else None
 
 
+def _get_zouzhe(db_path, zid):
+    """Return full zouzhe row as dict (includes error, state, dispatched_at, etc.)"""
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    row = db.execute("SELECT * FROM zouzhe WHERE id=?", (zid,)).fetchone()
+    db.close()
+    return dict(row) if row else None
+
+
 # ──────────────────────────────────────────────────────
 # 场景 1：push-for-review → pr_review 状态验证
 # ──────────────────────────────────────────────────────
@@ -513,6 +522,137 @@ class TestDispatchToYushiMessage(unittest.TestCase):
         self.assertIn("架构一致性", msg)
         self.assertIn("yushi-approve", msg)
         self.assertIn("yushi-nogo", msg)
+
+
+# ──────────────────────────────────────────────────────
+# Regression tests for post-merge audit (ZZ-20260313-008)
+# Bug 1: executor_revise timeout not handled in check_timeouts()
+# Bug 2: yushi-nogo reason not saved to error field
+# ──────────────────────────────────────────────────────
+
+def _run_dispatcher_check_timeouts(test_db):
+    """Run dispatcher.check_timeouts() with patched get_db pointing to test_db."""
+    def _get():
+        conn = sqlite3.connect(test_db)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
+    with patch.object(_disp, "get_db", side_effect=_get):
+        with patch.object(_disp, "zouzhe_log"):
+            with patch.object(_disp, "_cli_notify"):
+                _disp.check_timeouts()
+
+
+def _run_dispatcher_poll(test_db, dispatched_msgs=None):
+    """Run dispatcher.poll_and_dispatch() with patched get_db and dispatch_agent."""
+    captured = dispatched_msgs if dispatched_msgs is not None else {}
+
+    def _get():
+        conn = sqlite3.connect(test_db)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
+    def _dispatch_agent(agent, zid, timeout_sec, msg=None, **kwargs):
+        captured[agent] = msg or ""
+
+    with patch.object(_disp, "get_db", side_effect=_get):
+        with patch.object(_disp, "dispatch_agent", side_effect=_dispatch_agent):
+            with patch.object(_disp, "zouzhe_log"):
+                with patch.object(_disp, "_cli_notify"):
+                    with patch.object(_disp, "_dispatch_to_yushi"):
+                        with patch.object(_disp, "_check_new_done_failed"):
+                            _disp.poll_and_dispatch()
+    return captured
+
+
+class TestExecutorReviseTimeout(unittest.TestCase):
+    """Regression test: executor_revise + dispatched_at timeout → escalated in check_timeouts()."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.test_db = _make_test_db(self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_executor_revise_timeout_escalates(self):
+        """executor_revise + dispatched_at expired → state becomes escalated in check_timeouts()."""
+        zid = "ZZ-TEST-REVISE-TIMEOUT-001"
+        _insert_zouzhe(self.test_db, zid, state="executing", assigned_agent="bingbu")
+
+        # Force state to executor_revise with an old dispatched_at (1 hour ago) and tiny timeout
+        db = sqlite3.connect(self.test_db)
+        db.execute(
+            "UPDATE zouzhe SET state='executor_revise', "
+            "dispatched_at=datetime('now', '-3600 seconds'), "
+            "timeout_sec=1 WHERE id=?",
+            (zid,),
+        )
+        db.commit()
+        db.close()
+
+        _run_dispatcher_check_timeouts(self.test_db)
+
+        row = _get_zouzhe(self.test_db, zid)
+        self.assertEqual(row["state"], "escalated",
+                         "executor_revise timeout should transition to escalated")
+        self.assertIn("超时", row["error"] or "",
+                      "error field should contain timeout description")
+
+
+class TestYushiNogoBugFixes(unittest.TestCase):
+    """Regression tests for yushi-nogo bug fixes (ZZ-20260313-008)."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.test_db = _make_test_db(self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_yushi_nogo_saves_reason_to_error(self):
+        """yushi-nogo normal path: NOGO reason must be saved to the error field in DB."""
+        zid = "ZZ-TEST-NOGO-ERROR-001"
+        _insert_zouzhe(self.test_db, zid, state="pr_review", assigned_agent="bingbu")
+
+        nogo_reason = "Missing edge case in handle_timeout: file src/dispatcher.py:1200"
+        result = _run_cmd(_ch.cmd_yushi_nogo, [zid, nogo_reason], self.test_db, agent_id="yushi")
+
+        self.assertTrue(result.get("ok"), f"yushi-nogo should succeed: {result}")
+        self.assertEqual(result.get("state"), "executor_revise")
+
+        row = _get_zouzhe(self.test_db, zid)
+        self.assertEqual(row["state"], "executor_revise")
+        self.assertEqual(
+            row["error"], nogo_reason,
+            "NOGO reason must be stored in the error field so dispatcher can include it in re-dispatch message"
+        )
+
+    def test_executor_revise_dispatch_includes_nogo_reason(self):
+        """Dispatcher executor_revise re-dispatch message must include the NOGO reason from error field."""
+        zid = "ZZ-TEST-NOGO-REASON-001"
+        _insert_zouzhe(self.test_db, zid, state="executor_revise", assigned_agent="bingbu",
+                       exec_revise_count=1,
+                       output="PR #99: https://github.com/org/repo/pull/99")
+
+        # Set the error field to the NOGO reason (simulating what yushi-nogo now saves)
+        nogo_reason = "Function foo() has off-by-one error at src/main.py:42"
+        db = sqlite3.connect(self.test_db)
+        db.execute("UPDATE zouzhe SET error=? WHERE id=?", (nogo_reason, zid))
+        db.commit()
+        db.close()
+
+        dispatched = _run_dispatcher_poll(self.test_db)
+
+        self.assertIn("bingbu", dispatched,
+                      "dispatcher should have re-dispatched to bingbu")
+        msg = dispatched["bingbu"]
+        self.assertIn(nogo_reason, msg,
+                      "Re-dispatch message must include the NOGO reason from the error field")
 
 
 if __name__ == "__main__":

@@ -1645,10 +1645,11 @@ def cmd_yushi_nogo(args):
             cursor = db.execute(
                 "UPDATE zouzhe SET state = 'executor_revise', "
                 "exec_revise_count = exec_revise_count + 1, "
+                "error = ?, "
                 "dispatched_at = NULL, "
                 "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
                 "WHERE id = ? AND state = 'pr_review' RETURNING id",
-                (zid,),
+                (reason, zid),
             )
             if not cursor.fetchone():
                 db.execute("ROLLBACK")
