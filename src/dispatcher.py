@@ -1315,17 +1315,27 @@ def check_timeouts():
         db.close()
 
 
-def _log_inflight_on_startup():
-    """Log any in-flight zouzhe on startup (informational only).
+STALE_REVIEWING_THRESHOLD_MIN = 5  # minutes; reviewing zouzhe older than this are re-dispatched on startup
 
-    Gateway agent sessions survive dispatcher restarts, so we do NOT
-    reset dispatched_at.  The existing check_timeouts() handles the
-    case where an agent truly dies without reporting back.
+
+def _log_inflight_on_startup():
+    """Log any in-flight zouzhe on startup and recover stale reviewing-state zouzhe.
+
+    Gateway agent sessions survive dispatcher restarts for planning/executing,
+    so we do NOT reset dispatched_at for those states.
+
+    However, reviewing-state zouzhe rely on ephemeral jishi sessions that are
+    killed when the dispatcher restarts.  If dispatched_at is older than
+    STALE_REVIEWING_THRESHOLD_MIN minutes, the jishi processes are almost
+    certainly gone and their partial votes are incomplete.  We:
+      1. Delete any incomplete toupiao rows for the current round.
+      2. Reset dispatched_at = NULL so that the next poll_and_dispatch() cycle
+         triggers a fresh reviewer re-dispatch (step 3: reviewing + dispatched_at IS NULL).
     """
     db = get_db()
     try:
         rows = db.execute("""
-            SELECT id, assigned_agent, state, dispatched_at FROM zouzhe
+            SELECT id, assigned_agent, state, dispatched_at, revise_count FROM zouzhe
             WHERE state IN ('planning', 'executing', 'reviewing')
               AND dispatched_at IS NOT NULL
         """).fetchall()
@@ -1333,7 +1343,39 @@ def _log_inflight_on_startup():
             for row in rows:
                 log.info("In-flight on startup: %s (agent=%s, state=%s, dispatched=%s)",
                          row["id"], row["assigned_agent"], row["state"], row["dispatched_at"])
-        log.info("Startup: %d in-flight zouzhe (trusting gateway sessions)", len(rows))
+
+        # Recover stale reviewing-state zouzhe whose jishi sessions were killed on restart.
+        stale_reviewing = db.execute("""
+            SELECT id, revise_count FROM zouzhe
+            WHERE state = 'reviewing'
+              AND dispatched_at IS NOT NULL
+              AND dispatched_at <= strftime('%Y-%m-%dT%H:%M:%S', 'now', :threshold)
+        """, {"threshold": f"-{STALE_REVIEWING_THRESHOLD_MIN} minutes"}).fetchall()
+
+        for row in stale_reviewing:
+            zid = row["id"]
+            current_round = (row["revise_count"] or 0) + 1
+            # Remove incomplete votes for this round — jishi was killed mid-run.
+            db.execute(
+                "DELETE FROM toupiao WHERE zouzhe_id = ? AND round = ?",
+                (zid, current_round),
+            )
+            # Reset dispatched_at so poll_and_dispatch() re-dispatches reviewers.
+            db.execute(
+                "UPDATE zouzhe SET dispatched_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+                "WHERE id = ? AND state = 'reviewing'",
+                (zid,),
+            )
+            db.commit()
+            log.warning(
+                "Startup recovery: reset stale reviewing zouzhe %s (round=%d, partial votes cleared)",
+                zid, current_round,
+            )
+            zouzhe_log(zid, "dispatcher", "RESTART_RECOVERY",
+                       f"⟳ Stale reviewing zouzhe reset for re-dispatch (round {current_round}, partial votes cleared)",
+                       actor="dispatcher", remark="dispatcher restart recovery")
+
+        log.info("Startup: %d in-flight zouzhe (%d stale reviewing reset)", len(rows), len(stale_reviewing))
     finally:
         db.close()
 
