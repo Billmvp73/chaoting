@@ -1235,7 +1235,7 @@ def poll_and_dispatch():
         # 6. Detect done/failed/timeout from CLI commands and enqueue notifications
         _check_new_done_failed(db)
 
-        # 7. check_pending_deploys: deploy_state=pending の奏折 → platform.deploy()
+        # 7. check_pending_deploys: deploy_state=pending 的奏折 → platform.deploy()
         if _PLATFORM_ENABLED:
             _check_pending_deploys(db)
     finally:

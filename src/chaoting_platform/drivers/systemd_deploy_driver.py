@@ -1,9 +1,13 @@
 import os
 import json
+import logging
+import shlex
 import shutil
 import subprocess
 import time
 from datetime import datetime, timezone
+
+log = logging.getLogger(__name__)
 
 from .base import DeployDriver, DeployResult
 
@@ -34,6 +38,7 @@ class SystemdDeployDriver(DeployDriver):
         binary_dest = deploy_spec.get("binary_dest", "")
         repo_path = deploy_spec.get("repo_path", "")
         post_deploy_cmd = deploy_spec.get("post_deploy_cmd", "")
+        branch = deploy_spec.get("branch", "main")
         backup_dir = os.path.join(CHAOTING_DIR, "backups")
 
         # Step 1: Pre-flight checks
@@ -67,18 +72,18 @@ class SystemdDeployDriver(DeployDriver):
         if repo_path and binary_src_rel:
             binary_src = os.path.join(repo_path, binary_src_rel)
 
-        # Step 2: Idempotency check (before git pull, check current deployed SHA)
+        # Step 2a: Idempotency check (before git pull, check current deployed SHA)
         current_sha = self._get_deployed_sha(project_id, backup_dir)
 
         # Step 3a: git pull (to get new code first, then check new SHA)
         if repo_path and not dry_run:
             try:
                 subprocess.run(
-                    ["git", "-C", repo_path, "checkout", "master"],
+                    ["git", "-C", repo_path, "checkout", branch],
                     check=True, capture_output=True, timeout=60
                 )
                 subprocess.run(
-                    ["git", "-C", repo_path, "pull", "origin", "master"],
+                    ["git", "-C", repo_path, "pull", "origin", branch],
                     check=True, capture_output=True, timeout=120
                 )
             except subprocess.CalledProcessError as e:
@@ -106,7 +111,7 @@ class SystemdDeployDriver(DeployDriver):
                 duration_sec=time.time() - start_time,
                 error="commit SHA matches deployed version; use --force to override")
 
-        # Step 2: Create backup
+        # Step 2b: Create backup
         backup_path = ""
         if binary_dest and os.path.exists(binary_dest) and not dry_run:
             try:
@@ -140,11 +145,12 @@ class SystemdDeployDriver(DeployDriver):
         # Step 3c: 条件性执行 post_deploy_cmd
         if post_deploy_cmd:
             try:
+                cmd_args = shlex.split(post_deploy_cmd)
                 subprocess.run(
-                    post_deploy_cmd, shell=True, capture_output=True, text=True, timeout=60
+                    cmd_args, shell=False, capture_output=True, text=True, timeout=60
                 )
-            except Exception:
-                pass  # post_deploy_cmd 失败不阻塞部署（非关键路径）
+            except Exception as e:
+                log.warning("post_deploy_cmd failed (non-fatal): %s", e)
 
         # Step 4: systemctl --user restart
         if service_name:
@@ -159,6 +165,13 @@ class SystemdDeployDriver(DeployDriver):
                     project_id=project_id, zouzhe_id=self.zouzhe_id,
                     from_commit=current_sha, to_commit=target_sha,
                     error=f"systemctl restart failed: {e}", step_failed="systemctl_restart",
+                    rollback_triggered=True, rollback_result=rollback_result)
+            except subprocess.TimeoutExpired as e:
+                rollback_result = self._do_rollback(backup_path, service_name)
+                return DeployResult(ok=False, exit_code=1, deploy_result="failed",
+                    project_id=project_id, zouzhe_id=self.zouzhe_id,
+                    from_commit=current_sha, to_commit=target_sha,
+                    error=f"systemctl restart timed out: {e}", step_failed="systemctl_restart",
                     rollback_triggered=True, rollback_result=rollback_result)
             except PermissionError as e:
                 return DeployResult(ok=False, exit_code=4, deploy_result="failed",
