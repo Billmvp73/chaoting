@@ -1675,11 +1675,11 @@ def cmd_push_for_review(args):
             out({"ok": False, "error": f"zouzhe {zid} not found"}, ok=False)
 
         row = dict(row)
-        if row["state"] != "executing":
+        if row["state"] not in ("executing", "executor_revise"):
             db.close()
             out({
                 "ok": False,
-                "error": f"push-for-review 只能在 executing 状态调用，当前状态: '{row['state']}'",
+                "error": f"push-for-review 只能在 executing 或 executor_revise 状态调用，当前状态: '{row['state']}'",
             }, ok=False)
 
         assigned_agent = row.get("assigned_agent")
@@ -1752,12 +1752,12 @@ def cmd_push_for_review(args):
         cursor = db.execute(
             "UPDATE zouzhe SET state = 'pr_review', output = ?, "
             "dispatched_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
-            "WHERE id = ? AND state = 'executing' RETURNING id",
+            "WHERE id = ? AND state IN ('executing', 'executor_revise') RETURNING id",
             (output, zid),
         )
         if not cursor.fetchone():
             db.close()
-            out({"ok": False, "error": "状态冲突：CAS 失败，奏折不再是 executing 状态"}, ok=False)
+            out({"ok": False, "error": "状态冲突：CAS 失败，奏折不再是 executing/executor_revise 状态"}, ok=False)
 
         db.execute(
             "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
