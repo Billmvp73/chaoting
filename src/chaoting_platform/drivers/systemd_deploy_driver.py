@@ -86,10 +86,10 @@ class SystemdDeployDriver(DeployDriver):
                     ["git", "-C", repo_path, "pull", "origin", branch],
                     check=True, capture_output=True, timeout=120
                 )
-            except subprocess.CalledProcessError as e:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 return DeployResult(ok=False, exit_code=5, deploy_result="failed",
                     project_id=project_id, zouzhe_id=self.zouzhe_id,
-                    error=f"git pull failed: {e}", step_failed="git_pull")
+                    error=f"git pull failed or timed out: {e}", step_failed="git_pull")
 
         # Get target SHA after pull
         target_sha = ""
