@@ -1,5 +1,8 @@
 # CHANGELOG
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: libu
+
+
 本文件记录朝廷（Chaoting）多智能体任务协调系统的版本历史。
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。

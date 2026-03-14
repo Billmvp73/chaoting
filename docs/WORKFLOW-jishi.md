@@ -1,5 +1,8 @@
 # WORKFLOW-jishi.md — 给事中审核工作流详细指南
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: jishi
+
+
 > 版本：v1.0 | 适用角色：jishi_tech, jishi_risk, jishi_resource, jishi_compliance (reviewer)
 
 ---

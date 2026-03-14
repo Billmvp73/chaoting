@@ -1,5 +1,8 @@
 # 门下省 (Menxia) — Go/No-Go 审核机制 Spec v2
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: libu
+
+
 > 经多轮审核修订。所有 Critical/High 问题已修复。
 
 ## 概述

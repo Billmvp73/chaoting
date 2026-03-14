@@ -1,5 +1,8 @@
 # WORKFLOW-xingbu.md — 刑部执行工作流详细指南
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: xingbu
+
+
 > 版本：v1.0 | 适用角色：xingbu (executor — 安全审计)
 
 ---

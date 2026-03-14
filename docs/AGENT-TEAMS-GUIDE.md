@@ -1,5 +1,8 @@
 # Chaoting Agent Teams 使用指南
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: bingbu
+
+
 **版本**: V0.3  
 **日期**: 2026-03-09  
 **适用版本**: Claude Code v2.1.39 + ACPx v0.1.15

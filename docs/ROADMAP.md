@@ -1,5 +1,8 @@
 # ROADMAP — 朝廷系统
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: libu
+
+
 > 当前版本：v0.3（典籍/前车知识系统、workspace 隔离、decide 命令、Agent Teams 已完成）
 > 本文档规划 v0.3 → v0.4 → v1.0 三个演进阶段。
 

@@ -1,5 +1,8 @@
 # TIMEOUT-GUIDE.md — Task Timeout Selection Guide
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: gongbu
+
+
 > Version: v1.0 | Updated: 2026-03-13
 
 ---

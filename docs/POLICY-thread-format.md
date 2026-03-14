@@ -1,5 +1,8 @@
 # POLICY-thread-format.md — 全部门 Discord Thread 标注格式规范
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: libu
+
+
 > 版本：v1.0  
 > 制定日期：2026-03-09  
 > 制定部门：吏部（libu_hr）  

@@ -473,12 +473,35 @@ def cmd_status(args):
     ]
 
     db.close()
+
+    # Read step progress from plan file
+    steps_done = None
+    steps_total = None
+    progress_pct = None
+    plan_path = os.path.join(CHAOTING_DATA_DIR, "docs", "plans", f"{zid}.md")
+    if os.path.isfile(plan_path):
+        try:
+            with open(plan_path, "r") as f:
+                content = f.read()
+            done_count = content.count("- [x] ")
+            remaining_count = content.count("- [ ] ")
+            total = done_count + remaining_count
+            if total > 0:
+                steps_done = done_count
+                steps_total = total
+                progress_pct = round(done_count / total * 100)
+        except Exception as e:
+            print(f"[WARN] failed to read plan file for step progress: {e}", file=sys.stderr)
+
     out({
         "ok": True,
         "zouzhe": zouzhe,
         "toupiao": toupiao,
         "liuzhuan": liuzhuan,
         "zoubao": zoubao,
+        "steps_done": steps_done,
+        "steps_total": steps_total,
+        "progress_pct": progress_pct,
     })
 
 
@@ -1003,7 +1026,7 @@ def _write_plan_md(zid, plan, target_agent):
         description = plan.get("description", "N/A")
         steps = plan.get("steps", [])
         acceptance_criteria = plan.get("acceptance_criteria", "N/A")
-        steps_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(steps)) if steps else "N/A"
+        steps_text = "\n".join(f"- [ ] {i+1}. {s}" for i, s in enumerate(steps)) if steps else "N/A"
         content = (
             f"# Plan: {zid} — {title}\n"
             f"\n"
@@ -1139,17 +1162,49 @@ def cmd_plan(args):
 
 
 def cmd_progress(args):
-    if len(args) < 2:
-        out({"ok": False, "error": "usage: chaoting progress <zouzhe_id> '<text>'"}, ok=False)
+    import argparse
+    parser = argparse.ArgumentParser(prog="chaoting progress", add_help=False)
+    parser.add_argument("zid")
+    parser.add_argument("text")
+    parser.add_argument("--step", type=int, default=None)
+    try:
+        parsed = parser.parse_args(args)
+    except SystemExit:
+        out({"ok": False, "error": "usage: chaoting progress <zouzhe_id> '<text>' [--step N]"}, ok=False)
+        return
 
-    zid = args[0]
-    text = args[1]
+    zid = parsed.zid
+    text = parsed.text
+    step = parsed.step
 
     db = get_db()
     row = db.execute("SELECT id FROM zouzhe WHERE id = ?", (zid,)).fetchone()
     if not row:
         db.close()
         out({"ok": False, "error": f"zouzhe {zid} not found"}, ok=False)
+
+    # Update step checkbox in plan file if --step N provided
+    if step is not None:
+        plan_path = os.path.join(CHAOTING_DATA_DIR, "docs", "plans", f"{zid}.md")
+        if os.path.isfile(plan_path):
+            try:
+                with open(plan_path, "r") as f:
+                    lines = f.readlines()
+                updated = False
+                for i, line in enumerate(lines):
+                    if line.strip().startswith(f"- [ ] {step}."):
+                        lines[i] = line.replace("- [ ] ", "- [x] ", 1)
+                        updated = True
+                        break
+                if updated:
+                    with open(plan_path, "w") as f:
+                        f.writelines(lines)
+                else:
+                    print(f"[WARN] step {step} not found in plan file {plan_path}", file=sys.stderr)
+            except Exception as e:
+                print(f"[WARN] failed to update plan file step: {e}", file=sys.stderr)
+        else:
+            print(f"[WARN] plan file not found: {plan_path}", file=sys.stderr)
 
     db.execute(
         "INSERT INTO zoubao (zouzhe_id, agent_id, text) VALUES (?, ?, ?)",

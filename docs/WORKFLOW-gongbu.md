@@ -1,5 +1,8 @@
 # WORKFLOW-gongbu.md — 工部执行工作流详细指南
 
+> Last verified: 2026-03-13 | Status: ✅ valid | Owner: gongbu
+
+
 > 版本：v1.0 | 适用角色：gongbu (executor — 运维部署)
 
 ---
