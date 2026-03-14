@@ -1138,10 +1138,12 @@ def poll_and_dispatch():
                 # Build NOGO context message
                 exec_revise_count = row["exec_revise_count"] or 0
                 output = row["output"] or "(未记录产出)"
+                nogo_reason = row["error"] or "(未记录原因)"
                 nogo_msg = (
                     f"⚠️ 御史 NOGO 通知（第 {exec_revise_count} 次）\n\n"
                     f"奏折：{zid}\n"
                     f"御史已审核你的 PR 并返回 NOGO，请修改代码。\n\n"
+                    f"【御史 NOGO 原因】\n{nogo_reason}\n\n"
                     f"【你的上次产出 / PR URL】\n{output}\n\n"
                     f"请在 PR 上修改代码，重新 push，然后调用：\n"
                     f"  {CHAOTING_CLI} push-for-review {zid} '<新产出描述+PR URL>'\n\n"
@@ -1264,6 +1266,41 @@ def check_timeouts():
                 _cli_notify(zid,
                             f"⏰ 御史审核超时\n\n"
                             f"📜 `{zid}` — 御史未在规定时间内完成审核\n"
+                            f"🏛️ 已呈司礼监裁决")
+
+        # Handle executor_revise state timeouts → escalated
+        executor_revise_timeout_rows = db.execute("""
+            SELECT * FROM zouzhe
+            WHERE state = 'executor_revise'
+              AND dispatched_at IS NOT NULL
+              AND (julianday('now') - julianday(dispatched_at)) * 86400 > timeout_sec
+        """).fetchall()
+        for row in executor_revise_timeout_rows:
+            zid = row["id"]
+            timeout_msg = (
+                f"执行者修订超时（超过 {row['timeout_sec']}s），已呈司礼监裁决"
+            )
+            affected = db.execute(
+                "UPDATE zouzhe SET state = 'escalated', error = ?, "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%S','now') "
+                "WHERE id = ? AND state = 'executor_revise'",
+                (timeout_msg, zid),
+            ).rowcount
+            if affected > 0:
+                db.execute(
+                    "INSERT INTO liuzhuan (zouzhe_id, from_role, to_role, action, remark) "
+                    "VALUES (?, 'dispatcher', 'silijian', 'executor_revise_timeout', ?)",
+                    (zid, f"执行者修订超时 {row['timeout_sec']}s → escalated"),
+                )
+                db.commit()
+                zouzhe_log(zid, "dispatcher", "TIMEOUT",
+                           "⏰ 执行者修订超时，executor_revise → escalated",
+                           content=f"TIMEOUT_SEC: {row['timeout_sec']}",
+                           actor="dispatcher")
+                log.warning("executor_revise timeout %s → escalated", zid)
+                _cli_notify(zid,
+                            f"⏰ 执行者修订超时\n\n"
+                            f"📜 `{zid}` — 执行者未在规定时间内完成修订\n"
                             f"🏛️ 已呈司礼监裁决")
     finally:
         db.close()
