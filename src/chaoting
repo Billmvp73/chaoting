@@ -1392,10 +1392,193 @@ def _fmt_yushi_nogo_thread(zid: str, reason: str, count: int, next_state: str, t
         )
 
 
+def cmd_logs(args):
+    """Query service logs via journalctl.
+
+    Usage: chaoting logs <service> [--tail N] [--grep pattern] [--since Xs|Xm|Xh]
+
+    Examples:
+        chaoting logs chaoting-dispatcher-.themachine
+        chaoting logs beebot --tail 50
+        chaoting logs themachine-gateway --grep "ERROR" --since 1h
+        chaoting logs chaoting-dispatcher-.themachine --since 30m --tail 100
+    """
+    if len(args) < 1:
+        out({
+            "ok": False,
+            "error": "usage: chaoting logs <service> [--tail N] [--grep pattern] [--since Xs|Xm|Xh]",
+        }, ok=False)
+
+    service = args[0]
+    tail = None
+    grep = None
+    since = None
+
+    i = 1
+    while i < len(args):
+        if args[i] == "--tail" and i + 1 < len(args):
+            try:
+                tail = int(args[i + 1])
+            except ValueError:
+                out({"ok": False, "error": "--tail must be an integer"}, ok=False)
+            i += 2
+        elif args[i] == "--grep" and i + 1 < len(args):
+            grep = args[i + 1]
+            i += 2
+        elif args[i] == "--since" and i + 1 < len(args):
+            since = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    # Build journalctl command
+    cmd = ["journalctl", "--user", "-u", service, "--no-pager"]
+
+    if tail is not None:
+        cmd += ["-n", str(tail)]
+
+    if grep:
+        cmd += ["-g", grep]
+
+    if since:
+        # Convert Xs/Xm/Xh to journalctl --since format
+        since_arg = since
+        if since.endswith("s") and since[:-1].isdigit():
+            since_arg = f"{since[:-1]} seconds ago"
+        elif since.endswith("m") and since[:-1].isdigit():
+            since_arg = f"{since[:-1]} minutes ago"
+        elif since.endswith("h") and since[:-1].isdigit():
+            since_arg = f"{since[:-1]} hours ago"
+        cmd += ["--since", since_arg]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        lines = result.stdout.splitlines()
+        out({
+            "ok": True,
+            "service": service,
+            "line_count": len(lines),
+            "logs": result.stdout,
+            "filters": {
+                "tail": tail,
+                "grep": grep,
+                "since": since,
+            },
+        })
+    except subprocess.TimeoutExpired:
+        out({"ok": False, "error": "journalctl timed out after 15s"}, ok=False)
+    except FileNotFoundError:
+        out({"ok": False, "error": "journalctl not found — not a systemd host"}, ok=False)
+    except Exception as e:
+        out({"ok": False, "error": str(e)}, ok=False)
+
+
+def _check_service_health(service, endpoint=None):
+    """Internal helper: check service health via systemctl + optional HTTP endpoint.
+
+    Returns a dict: {active, healthy, details, endpoint_ok (if endpoint provided)}
+    """
+    details = []
+
+    # Check systemctl --user is-active
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", service],
+            capture_output=True, text=True, timeout=10,
+        )
+        active_status = result.stdout.strip()
+        active = active_status == "active"
+        details.append(f"systemctl status: {active_status}")
+    except subprocess.TimeoutExpired:
+        active = False
+        details.append("systemctl check timed out")
+    except FileNotFoundError:
+        active = False
+        details.append("systemctl not found")
+    except Exception as e:
+        active = False
+        details.append(f"systemctl error: {e}")
+
+    healthy = active
+    endpoint_ok = None
+
+    # Optional HTTP health endpoint check
+    if endpoint:
+        try:
+            ep_result = subprocess.run(
+                ["curl", "-sf", "--max-time", "5", endpoint],
+                capture_output=True, text=True, timeout=10,
+            )
+            endpoint_ok = ep_result.returncode == 0
+            if endpoint_ok:
+                details.append(f"endpoint {endpoint}: OK")
+            else:
+                details.append(f"endpoint {endpoint}: FAILED (exit {ep_result.returncode})")
+            healthy = healthy and endpoint_ok
+        except subprocess.TimeoutExpired:
+            endpoint_ok = False
+            healthy = False
+            details.append(f"endpoint {endpoint}: timed out")
+        except FileNotFoundError:
+            endpoint_ok = False
+            details.append("curl not found — skipping endpoint check")
+        except Exception as e:
+            endpoint_ok = False
+            details.append(f"endpoint check error: {e}")
+
+    result_dict = {
+        "service": service,
+        "active": active,
+        "healthy": healthy,
+        "details": details,
+    }
+    if endpoint is not None:
+        result_dict["endpoint_ok"] = endpoint_ok
+
+    return result_dict
+
+
+def cmd_health(args):
+    """Check service health via systemctl + optional HTTP endpoint.
+
+    Usage: chaoting health <service> [--endpoint URL]
+
+    Returns JSON: {service, active, healthy, details, endpoint_ok?}
+
+    Examples:
+        chaoting health chaoting-dispatcher-.themachine
+        chaoting health beebot --endpoint http://localhost:8080/health
+    """
+    if len(args) < 1:
+        out({
+            "ok": False,
+            "error": "usage: chaoting health <service> [--endpoint URL]",
+        }, ok=False)
+
+    service = args[0]
+    endpoint = None
+
+    i = 1
+    while i < len(args):
+        if args[i] == "--endpoint" and i + 1 < len(args):
+            endpoint = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    try:
+        health = _check_service_health(service, endpoint=endpoint)
+        health["ok"] = True
+        out(health)
+    except Exception as e:
+        out({"ok": False, "error": str(e)}, ok=False)
+
+
 def cmd_push_for_review(args):
     """Submit executor's work for yushi PR code review.
 
     Usage: chaoting push-for-review <zouzhe_id> '<output_with_pr_url>'
+               [--service <name>] [--skip-health-check]
 
     State transition: executing → pr_review
 
@@ -1403,15 +1586,31 @@ def cmd_push_for_review(args):
     - Clears dispatched_at so dispatcher re-dispatches to yushi
     - Records liuzhuan: executor → dispatcher | push_for_review
     - Must be called before chaoting done (yushi-approve triggers done)
+    - Layer 2: auto-commits docs/test-results/<ZZ-ID>.md if present in repo
+    - Layer 3: enforces health gate if --service is given (bypass: --skip-health-check)
     """
     if len(args) < 2:
         out({
             "ok": False,
-            "error": "usage: chaoting push-for-review <zouzhe_id> '<output_with_pr_url>'",
+            "error": "usage: chaoting push-for-review <zouzhe_id> '<output_with_pr_url>' [--service <name>] [--skip-health-check]",
         }, ok=False)
 
     zid = args[0]
     output = args[1]
+
+    # Parse optional flags
+    service_name = None
+    skip_health_check = False
+    i = 2
+    while i < len(args):
+        if args[i] == "--service" and i + 1 < len(args):
+            service_name = args[i + 1]
+            i += 2
+        elif args[i] == "--skip-health-check":
+            skip_health_check = True
+            i += 1
+        else:
+            i += 1
 
     db = get_db()
     try:
@@ -1430,6 +1629,70 @@ def cmd_push_for_review(args):
 
         assigned_agent = row.get("assigned_agent")
         thread_id = row.get("discord_thread_id")
+
+        # Extract repo_path from plan JSON for Layer 2 & Layer 3
+        repo_path = None
+        try:
+            if row.get("plan"):
+                plan_obj = json.loads(row["plan"])
+                repo_path = plan_obj.get("repo_path")
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # ── Layer 3: Health Gate ──────────────────────────────────────────────
+        health_note = None
+        if service_name and not skip_health_check:
+            try:
+                health = _check_service_health(service_name)
+                if not health["healthy"]:
+                    db.close()
+                    out({
+                        "ok": False,
+                        "error": (
+                            f"Health gate FAILED for service '{service_name}': "
+                            f"{'; '.join(health['details'])}. "
+                            f"Use --skip-health-check to bypass."
+                        ),
+                    }, ok=False)
+                health_note = f"health gate passed: {service_name} is active"
+            except Exception as he:
+                db.close()
+                out({"ok": False, "error": f"Health gate error: {he}"}, ok=False)
+        elif service_name and skip_health_check:
+            health_note = f"health gate skipped (--skip-health-check) for service '{service_name}'"
+        # If no service_name given: health gate not applicable, proceed silently
+
+        # ── Layer 2: Test Results Persistence ────────────────────────────────
+        test_results_committed = False
+        test_results_note = None
+        if repo_path:
+            test_results_file = os.path.join(repo_path, "docs", "test-results", f"{zid}.md")
+            if os.path.isfile(test_results_file):
+                try:
+                    # Stage and commit test results into the current branch
+                    rel_path = os.path.join("docs", "test-results", f"{zid}.md")
+                    add_result = subprocess.run(
+                        ["git", "add", rel_path],
+                        cwd=repo_path, capture_output=True, text=True, timeout=15,
+                    )
+                    if add_result.returncode != 0:
+                        test_results_note = f"git add failed: {add_result.stderr.strip()}"
+                    else:
+                        commit_result = subprocess.run(
+                            ["git", "commit", "-m", f"test: add test results for {zid}"],
+                            cwd=repo_path, capture_output=True, text=True, timeout=15,
+                        )
+                        if commit_result.returncode == 0:
+                            test_results_committed = True
+                            test_results_note = f"test results committed: {rel_path}"
+                        elif "nothing to commit" in commit_result.stdout.lower():
+                            test_results_note = "test results file already committed"
+                        else:
+                            test_results_note = f"git commit failed: {commit_result.stderr.strip()}"
+                except Exception as te:
+                    test_results_note = f"test results commit error: {te}"
+            else:
+                test_results_note = f"no test results file at {test_results_file} — skipped"
 
         cursor = db.execute(
             "UPDATE zouzhe SET state = 'pr_review', output = ?, "
@@ -1459,8 +1722,19 @@ def cmd_push_for_review(args):
             thread_id=thread_id,
         )
 
-        out({"ok": True, "zouzhe_id": zid, "state": "pr_review",
-             "note": "dispatcher 将在下次 poll 中派发御史（yushi）审核"})
+        response = {
+            "ok": True,
+            "zouzhe_id": zid,
+            "state": "pr_review",
+            "note": "dispatcher 将在下次 poll 中派发御史（yushi）审核",
+        }
+        if health_note:
+            response["health_note"] = health_note
+        if test_results_note:
+            response["test_results_note"] = test_results_note
+        if test_results_committed:
+            response["test_results_committed"] = True
+        out(response)
 
     except Exception as e:
         try:
@@ -2363,6 +2637,8 @@ COMMANDS = {
     "push-for-review": cmd_push_for_review,
     "yushi-approve": cmd_yushi_approve,
     "yushi-nogo": cmd_yushi_nogo,
+    "logs": cmd_logs,
+    "health": cmd_health,
     "context": cmd_context,
     "lesson": cmd_lesson,
     "vote": cmd_vote,

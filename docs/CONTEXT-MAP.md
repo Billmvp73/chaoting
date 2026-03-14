@@ -1,6 +1,6 @@
 # CONTEXT-MAP.md — 朝廷系统全局知识地图
 
-> 版本：v1.0 | 更新日期：2026-03-13
+> 版本：v1.1 | 更新日期：2026-03-14
 
 ---
 
@@ -41,6 +41,7 @@
 | Thread 格式 | `docs/POLICY-thread-format.md` | Discord 消息格式 |
 | Thread 反馈 | `docs/POLICY-thread-feedback.md` | 完成/失败反馈格式 |
 | Agent Teams | `docs/AGENT-TEAMS-GUIDE.md` | 多 agent 协作指南 |
+| 可观测性基础设施 | `docs/OBSERVABILITY.md` | `chaoting logs` / `chaoting health` 命令、push-for-review health gate、test-results 持久化 |
 | CHANGELOG | `docs/CHANGELOG.md` | 版本更新记录 |
 | ROADMAP | `docs/ROADMAP.md` | 项目路线图 |
 

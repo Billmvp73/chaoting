@@ -1,6 +1,6 @@
 # Document Index
 
-> Last updated: 2026-03-13
+> Last updated: 2026-03-14
 > Maintained by: libu (Documentation Executor)
 
 This index provides a categorized overview of all documentation in the Chaoting repository.
@@ -16,6 +16,7 @@ This index provides a categorized overview of all documentation in the Chaoting 
 | [docs/SPEC-menxia.md](docs/SPEC-menxia.md) | Menxia (Gate Review) subsystem specification: voting rules, NOGO thresholds, escalation logic |
 | [docs/CONTEXT-MAP.md](docs/CONTEXT-MAP.md) | Context map of system components and their relationships |
 | [docs/AGENT-TEAMS-GUIDE.md](docs/AGENT-TEAMS-GUIDE.md) | Guide to multi-agent teamwork patterns within a single executor (Architect → Coder → Tester → Docs) |
+| [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) | Observability infrastructure: `chaoting logs` (journalctl wrapper), `chaoting health` (systemctl + HTTP check), push-for-review health gate and test-results auto-commit |
 
 ---
 
