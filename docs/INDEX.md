@@ -50,6 +50,7 @@ This index provides a categorized overview of all documentation in the Chaoting 
 | [docs/WORKFLOW-xingbu.md](docs/WORKFLOW-xingbu.md) | Security auditor (xingbu) workflow: security review, vulnerability assessment |
 | [docs/WORKFLOW-jishi.md](docs/WORKFLOW-jishi.md) | Plan reviewer (jishi) workflow: receiving plans, evaluating, casting votes |
 | [docs/TIMEOUT-GUIDE.md](docs/TIMEOUT-GUIDE.md) | Guide for selecting appropriate `--timeout` values when creating tasks |
+| [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) | Agent observability infrastructure: `chaoting logs`, `chaoting health`, and test-results persistence — enables agent self-verification loops |
 
 ---
 

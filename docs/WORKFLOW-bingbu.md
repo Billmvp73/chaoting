@@ -33,6 +33,38 @@ cd ../worktree-ZZ-XXXXXXXX-NNN
   ```
 - 定期汇报进展：`$CHAOTING_CLI progress ZZ-XXXXXXXX-NNN "进展描述"`
 
+## 3.5 Post-execution Verification (Required)
+
+After implementing changes, **before calling push-for-review**, run the observability checks:
+
+```bash
+# a) Save test results for yushi review
+mkdir -p docs/test-results
+python -m pytest tests/ -v 2>&1 | tee docs/test-results/ZZ-XXXXXXXX-NNN.md
+
+# b) Verify the service is running (skip for non-service tasks)
+chaoting health <service-name>
+
+# c) Check for errors in recent logs
+chaoting logs <service-name> --tail 20
+```
+
+Then submit with observability flags:
+
+```bash
+# For tasks involving a running service:
+chaoting push-for-review ZZ-XXXXXXXX-NNN "PR #N: <url>" \
+  --worktree /path/to/worktree \
+  --service <service-name>
+
+# For tasks that do NOT involve a running service (e.g., docs, pure library changes):
+chaoting push-for-review ZZ-XXXXXXXX-NNN "PR #N: <url>" \
+  --worktree /path/to/worktree \
+  --skip-health-check
+```
+
+See `docs/OBSERVABILITY.md` for full reference.
+
 ## 4. 创建 Issue + PR（三步双联）
 
 ```bash

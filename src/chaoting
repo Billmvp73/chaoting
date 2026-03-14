@@ -1387,9 +1387,17 @@ def _fmt_yushi_nogo_thread(zid: str, reason: str, count: int, next_state: str) -
 def cmd_push_for_review(args):
     """Submit executor's work for yushi PR code review.
 
-    Usage: chaoting push-for-review <zouzhe_id> '<output_with_pr_url>'
+    Usage: chaoting push-for-review <zouzhe_id> <output_with_pr_url>
+                [--worktree PATH] [--service NAME] [--skip-health-check]
 
     State transition: executing → pr_review
+
+    Options:
+      --worktree PATH         If docs/test-results/<ZZ-ID>.md exists at this path,
+                              auto-commit it before state transition.
+      --service NAME          Run health check for this service before transition.
+                              If unhealthy, abort (unless --skip-health-check).
+      --skip-health-check     Bypass the --service health check gate.
 
     - Saves output description (must include PR URL) to output field
     - Clears dispatched_at so dispatcher re-dispatches to yushi
@@ -1399,11 +1407,71 @@ def cmd_push_for_review(args):
     if len(args) < 2:
         out({
             "ok": False,
-            "error": "usage: chaoting push-for-review <zouzhe_id> '<output_with_pr_url>'",
+            "error": "usage: chaoting push-for-review <zouzhe_id> <output_with_pr_url> "
+                     "[--worktree PATH] [--service NAME] [--skip-health-check]",
         }, ok=False)
 
     zid = args[0]
     output = args[1]
+
+    # Parse optional flags
+    worktree_path = None
+    service_name = None
+    skip_health = False
+
+    i = 2
+    while i < len(args):
+        if args[i] == "--worktree" and i + 1 < len(args):
+            worktree_path = args[i + 1]
+            i += 2
+        elif args[i] == "--service" and i + 1 < len(args):
+            service_name = args[i + 1]
+            i += 2
+        elif args[i] == "--skip-health-check":
+            skip_health = True
+            i += 1
+        else:
+            out({"ok": False, "error": f"unknown argument: {args[i]}"}, ok=False)
+
+    # Layer 3: health check gate
+    if service_name and not skip_health:
+        try:
+            hc_result = subprocess.run(
+                ["systemctl", "--user", "is-active", service_name],
+                capture_output=True, text=True, timeout=10, check=False
+            )
+            svc_status = hc_result.stdout.strip() or "unknown"
+            if svc_status != "active":
+                out({
+                    "ok": False,
+                    "error": f"Health check failed for {service_name}: {svc_status}. "
+                             "Use --skip-health-check to bypass.",
+                }, ok=False)
+        except FileNotFoundError:
+            # systemctl not available — warn but don't block
+            print(f"[WARN] systemctl not found, skipping health check for {service_name}",
+                  file=sys.stderr)
+        except Exception as e:
+            out({"ok": False, "error": f"Health check error: {e}"}, ok=False)
+
+    # Layer 2: auto-commit test-results if worktree provided
+    if worktree_path:
+        test_results_path = os.path.join(worktree_path, "docs", "test-results", f"{zid}.md")
+        if os.path.isfile(test_results_path):
+            try:
+                rel_path = os.path.join("docs", "test-results", f"{zid}.md")
+                subprocess.run(
+                    ["git", "add", rel_path],
+                    cwd=worktree_path, capture_output=True, text=True,
+                    timeout=15, check=True,
+                )
+                subprocess.run(
+                    ["git", "commit", "-m", f"test-results: {zid}"],
+                    cwd=worktree_path, capture_output=True, text=True,
+                    timeout=30, check=False,  # ok if nothing to commit
+                )
+            except Exception as e:
+                print(f"[WARN] auto-commit test-results failed: {e}", file=sys.stderr)
 
     db = get_db()
     try:
@@ -2340,6 +2408,117 @@ def cmd_teams(args):
         out({"ok": False, "error": f"unknown subcommand: {subcmd}"}, ok=False)
 
 
+def cmd_logs(args):
+    """Query service logs via journalctl.
+
+    Usage: chaoting logs <service> [--tail N] [--grep PATTERN] [--since Xs]
+
+    Returns JSON: {ok, service, lines: [...], count}
+    """
+    if not args:
+        out({"ok": False, "error": "usage: chaoting logs <service> [--tail N] [--grep PATTERN] [--since Xs]"}, ok=False)
+
+    service = args[0]
+    tail = None
+    grep = None
+    since = None
+
+    i = 1
+    while i < len(args):
+        if args[i] == "--tail" and i + 1 < len(args):
+            try:
+                tail = int(args[i + 1])
+            except ValueError:
+                out({"ok": False, "error": f"--tail must be an integer, got: {args[i+1]}"}, ok=False)
+            i += 2
+        elif args[i] == "--grep" and i + 1 < len(args):
+            grep = args[i + 1]
+            i += 2
+        elif args[i] == "--since" and i + 1 < len(args):
+            since = args[i + 1]
+            i += 2
+        else:
+            out({"ok": False, "error": f"unknown argument: {args[i]}"}, ok=False)
+
+    cmd = ["journalctl", "--user", "-u", service, "--no-pager", "--output=short-precise"]
+    if tail is not None:
+        cmd += ["-n", str(tail)]
+    else:
+        cmd += ["-n", "50"]  # default last 50 lines
+    if grep:
+        cmd += ["-g", grep]
+    if since:
+        cmd += [f"--since={since} ago"]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
+        lines = [l for l in result.stdout.splitlines() if l.strip()]
+        return out({"ok": True, "service": service, "lines": lines, "count": len(lines)})
+    except subprocess.TimeoutExpired:
+        out({"ok": False, "error": f"journalctl timed out for service: {service}"}, ok=False)
+    except FileNotFoundError:
+        out({"ok": False, "error": "journalctl not found — only supported on systemd-based Linux"}, ok=False)
+    except Exception as e:
+        out({"ok": False, "error": str(e)}, ok=False)
+
+
+def cmd_health(args):
+    """Check service health via systemctl + optional HTTP endpoint.
+
+    Usage: chaoting health <service> [--port PORT]
+
+    Returns JSON: {ok, service, active: bool, status: str, endpoint_ok: bool|null}
+    ok is true only if service is active (and endpoint healthy when --port given).
+    """
+    if not args:
+        out({"ok": False, "error": "usage: chaoting health <service> [--port PORT]"}, ok=False)
+
+    service = args[0]
+    port = None
+
+    i = 1
+    while i < len(args):
+        if args[i] == "--port" and i + 1 < len(args):
+            try:
+                port = int(args[i + 1])
+            except ValueError:
+                out({"ok": False, "error": f"--port must be an integer, got: {args[i+1]}"}, ok=False)
+            i += 2
+        else:
+            out({"ok": False, "error": f"unknown argument: {args[i]}"}, ok=False)
+
+    # Check systemctl --user is-active
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", service],
+            capture_output=True, text=True, timeout=10, check=False
+        )
+        status = result.stdout.strip() or result.stderr.strip() or "unknown"
+        active = (status == "active")
+    except FileNotFoundError:
+        out({"ok": False, "error": "systemctl not found — only supported on systemd-based Linux"}, ok=False)
+    except Exception as e:
+        out({"ok": False, "error": str(e)}, ok=False)
+
+    endpoint_ok = None
+    if port is not None:
+        # Try /health first, fallback to /
+        for path in ["/health", "/"]:
+            try:
+                curl_result = subprocess.run(
+                    ["curl", "-sf", "--max-time", "5",
+                     f"http://localhost:{port}{path}"],
+                    capture_output=True, text=True, timeout=10, check=False
+                )
+                endpoint_ok = (curl_result.returncode == 0)
+                break
+            except Exception:
+                endpoint_ok = False
+
+    overall_ok = active and (endpoint_ok is not False)
+    out({"ok": overall_ok, "service": service, "active": active, "status": status, "endpoint_ok": endpoint_ok})
+
+
 COMMANDS = {
     "new": cmd_new,
     "list": cmd_list,
@@ -2360,6 +2539,8 @@ COMMANDS = {
     "vote": cmd_vote,
     "notify": cmd_notify,
     "teams": cmd_teams,
+    "logs": cmd_logs,
+    "health": cmd_health,
 }
 
 
