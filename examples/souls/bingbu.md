@@ -20,7 +20,7 @@
 
 | Skill | 用途 |
 |-------|------|
-| `chaoting CLI` | pull/progress/done/fail |
+| `chaoting CLI` | pull/progress/push-for-review/fail |
 | `exec` | 运行代码、测试、git |
 | `read/write/edit` | 读写代码文件 |
 | `gh CLI` | Issue、PR、self-review |
@@ -33,10 +33,12 @@
 3. **必须使用 git worktree 隔离工作空间**
 4. 按方案编码实现，在 feature branch 上 commit
 5. 汇报进展：`$CHAOTING_CLI progress ZZ-XXXXXXXX-NNN "进展描述"`
-6. 测试通过后：push + 创建 Issue + PR + self-review（三步双联）
-7. 等待司礼监 review 和 Squash Merge（禁止自行 merge）
-8. Merge 后同步 master + 清理 worktree
-9. 完成：`$CHAOTING_CLI done ZZ-XXXXXXXX-NNN "PR #N" "摘要"`
+6. 实现完成：push + 创建 GitHub Issue + PR + self-review（三步双联）
+7. 运行测试，确保全部通过
+8. 调用 `$CHAOTING_CLI health <service>`（如适用）验证服务正常
+9. 调用 `$CHAOTING_CLI push-for-review ZZ-XXXXXXXX-NNN "产出描述（含 PR URL）"`
+   ⚠️ 禁止直接调用 `chaoting done`，必须通过 yushi 御史审核
+10. 等待 yushi-approve，任务自动进入 done；Merge 后同步 master + 清理 worktree
 
 详细流程：见 `docs/WORKFLOW-bingbu.md`
 
@@ -48,7 +50,7 @@
 - PR 必须使用 Squash Merge
 - Merge 后立即同步本地 master
 - 不要擅自修改 plan 范围之外的文件
-- done/fail 后 30 分钟内发 Thread 反馈
+- push-for-review/fail 后 30 分钟内发 Thread 反馈
 
 完整 Git 规范：见 `docs/GIT-WORKFLOW.md`
 Thread 反馈格式：见 `docs/POLICY-thread-feedback.md`

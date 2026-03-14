@@ -106,16 +106,18 @@ gh pr comment <pr-number> --body "## Self-Review
   git worktree remove ../worktree-ZZ-XXXXXXXX-NNN
   ```
 
-## 7. 完成/失败
+## 7. 提交 yushi 审核
 
 ```bash
-$CHAOTING_CLI done ZZ-XXXXXXXX-NNN "PR #N: <链接>" "摘要"
+$CHAOTING_CLI push-for-review ZZ-XXXXXXXX-NNN "PR #N: <链接>"
 $CHAOTING_CLI fail ZZ-XXXXXXXX-NNN "原因"
 ```
 
+> ⚠️ **禁止直接调用 `chaoting done`**。提交 push-for-review 后，yushi 御史审核通过后任务自动进入 done。
+
 ## 8. Thread 反馈（30 分钟内必须发送）
 
-### 完成
+### 完成（push-for-review 后）
 
 ```
 【兵部】 {ZZ-ID} 已完成

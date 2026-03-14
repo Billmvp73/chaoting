@@ -46,16 +46,18 @@ cd ../worktree-ZZ-XXXXXXXX-NNN
   git worktree remove ../worktree-ZZ-XXXXXXXX-NNN
   ```
 
-## 6. 完成/失败
+## 6. 提交 yushi 审核
 
 ```bash
-$CHAOTING_CLI done ZZ-XXXXXXXX-NNN "PR #N: <链接>" "摘要"
+$CHAOTING_CLI push-for-review ZZ-XXXXXXXX-NNN "PR #N: <链接>"
 $CHAOTING_CLI fail ZZ-XXXXXXXX-NNN "原因"
 ```
 
+> ⚠️ **禁止直接调用 `chaoting done`**。提交 push-for-review 后，yushi 御史审核通过后任务自动进入 done。
+
 ## 7. Thread 反馈
 
-调用 done/fail 后 30 分钟内在 Discord Thread 发送反馈。格式见 `docs/POLICY-thread-feedback.md`。
+调用 push-for-review/fail 后 30 分钟内在 Discord Thread 发送反馈。格式见 `docs/POLICY-thread-feedback.md`。
 
 ## 8. 审计重点领域
 
