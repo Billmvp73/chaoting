@@ -2677,6 +2677,49 @@ def cmd_teams(args):
         out({"ok": False, "error": f"unknown subcommand: {subcmd}"}, ok=False)
 
 
+def cmd_lint(args):
+    """Run the golden-rule linter and output the health report.
+
+    Usage: chaoting lint
+
+    Checks all golden rules (SOUL line count, structure, doc references,
+    push-for-review in executor WORKFLOWs, PR/Issue format in GIT-WORKFLOW.md).
+    Exits with the linter's exit code (0=all pass, 1=any fail).
+
+    Example:
+        chaoting lint
+    """
+    import subprocess
+    src_dir = os.path.dirname(os.path.abspath(__file__))
+    lint_script = os.path.join(src_dir, "chaoting_lint.py")
+    result = subprocess.run(
+        [sys.executable, lint_script] + args,
+        check=False,
+    )
+    sys.exit(result.returncode)
+
+
+def cmd_drift(args):
+    """Run the drift scanner and output docs that need attention.
+
+    Usage: chaoting drift
+
+    Scans for stale metadata headers, INDEX.md inconsistencies, and
+    executor agents missing WORKFLOW docs. Always exits 0 (informational).
+
+    Example:
+        chaoting drift
+    """
+    import subprocess
+    src_dir = os.path.dirname(os.path.abspath(__file__))
+    drift_script = os.path.join(src_dir, "chaoting_drift.py")
+    result = subprocess.run(
+        [sys.executable, drift_script] + args,
+        check=False,
+    )
+    sys.exit(result.returncode)
+
+
 COMMANDS = {
     "new": cmd_new,
     "list": cmd_list,
@@ -2694,6 +2737,8 @@ COMMANDS = {
     "yushi-nogo": cmd_yushi_nogo,
     "logs": cmd_logs,
     "health": cmd_health,
+    "lint": cmd_lint,
+    "drift": cmd_drift,
     "context": cmd_context,
     "lesson": cmd_lesson,
     "vote": cmd_vote,
