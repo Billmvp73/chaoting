@@ -1358,30 +1358,38 @@ def _fmt_push_for_review_thread(zid: str, agent: str, output: str) -> str:
     )
 
 
-def _fmt_yushi_approve_thread(zid: str) -> str:
+def _fmt_yushi_approve_thread(zid: str, title: str = "") -> str:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return (
         f"【御史】🔍 御史准奏\n\n"
-        f"奏折：`{zid}`\n"
+        f"✅ 御史准奏\n"
+        f"📜 `{zid}` — {title}\n"
         f"审核时间：{ts}\n\n"
-        f"**代码审核通过**，任务已完成。等待司礼监 Merge PR。"
+        f"🎉 代码审查通过，进入 done 状态\n"
+        f"等待司礼监 Merge PR。"
     )
 
 
-def _fmt_yushi_nogo_thread(zid: str, reason: str, count: int, next_state: str) -> str:
+def _fmt_yushi_nogo_thread(zid: str, reason: str, count: int, next_state: str, title: str = "") -> str:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if next_state == "escalated":
-        state_label = f"⚠️ NOGO 次数已达上限，已呈司礼监裁决"
+        return (
+            f"【御史】🔍 御史审核超限\n\n"
+            f"⚠️ 御史审核超限\n"
+            f"📜 `{zid}` — 已超过最大 NOGO 次数，escalated → 请司礼监裁决\n"
+            f"时间：{ts}\n\n"
+            f"📝 最近 NOGO 原因：{reason or '(未说明)'}"
+        )
     else:
-        state_label = f"退回执行部门修改（第 {count} 次 NOGO）"
-    return (
-        f"【御史】🔍 御史 NOGO\n\n"
-        f"奏折：`{zid}`\n"
-        f"时间：{ts}\n"
-        f"{state_label}\n\n"
-        f"**【NOGO 原因】**\n{reason or '(未说明)'}\n\n"
-        f"请在 PR 中修改代码后，重新调用 `push-for-review` 提交御史审核。"
-    )
+        return (
+            f"【御史】🔍 御史 NOGO\n\n"
+            f"❌ 御史驳回（NOGO）\n"
+            f"📜 `{zid}` — {title}\n"
+            f"时间：{ts}\n"
+            f"退回执行部门修改（第 {count} 次 NOGO）\n\n"
+            f"📝 原因：{reason or '(未说明)'}\n\n"
+            f"🔄 执行部门请修改代码后重新提交"
+        )
 
 
 def cmd_push_for_review(args):
@@ -1529,7 +1537,7 @@ def cmd_yushi_approve(args):
 
         send_discord(
             zid,
-            _fmt_yushi_approve_thread(zid),
+            _fmt_yushi_approve_thread(zid, title=row.get("title", "")),
             thread_id=thread_id,
         )
 
@@ -1628,7 +1636,7 @@ def cmd_yushi_nogo(args):
                        reason=reason)
             send_discord(
                 zid,
-                _fmt_yushi_nogo_thread(zid, reason, current_count + 1, "escalated"),
+                _fmt_yushi_nogo_thread(zid, reason, current_count + 1, "escalated", title=row.get("title", "")),
                 thread_id=thread_id,
             )
             out({
@@ -1671,7 +1679,7 @@ def cmd_yushi_nogo(args):
                        exec_revise_count=new_count)
             send_discord(
                 zid,
-                _fmt_yushi_nogo_thread(zid, reason, new_count, "executor_revise"),
+                _fmt_yushi_nogo_thread(zid, reason, new_count, "executor_revise", title=row.get("title", "")),
                 thread_id=thread_id,
             )
             out({
