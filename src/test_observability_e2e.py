@@ -101,6 +101,7 @@ class TestLogsCommand(unittest.TestCase):
         self.assertIn("service", data)
         self.assertIn("line_count", data)
         self.assertIn("logs", data)
+        self.assertIsInstance(data["logs"], list)
         self.assertIn("filters", data)
         filters = data["filters"]
         self.assertIn("tail", filters)
