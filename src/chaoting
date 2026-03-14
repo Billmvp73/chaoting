@@ -1513,7 +1513,7 @@ def cmd_logs(args):
             "ok": True,
             "service": service,
             "line_count": len(lines),
-            "logs": result.stdout,
+            "logs": lines,
             "filters": {
                 "tail": tail,
                 "grep": grep,
